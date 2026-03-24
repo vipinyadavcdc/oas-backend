@@ -7,10 +7,17 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 
 app.set('trust proxy', 1);
-
 app.use(helmet());
 
-app.use(cors());
+// CORS — allow frontend
+app.use(cors({
+  origin: [
+    'https://oas-frontend-nine.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:5173'
+  ],
+  credentials: true
+}));
 app.options('*', cors());
 
 app.use(express.json({ limit: '10mb' }));
