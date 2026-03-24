@@ -8,6 +8,20 @@ async function seed() {
   await pool.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`)
   await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`)
 
+  // Drop all tables fresh to fix type mismatches
+  await pool.query(`DROP TABLE IF EXISTS audit_logs CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS heartbeats CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS violations CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS exam_results CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS student_answers CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS student_sessions CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS exam_questions CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS exam_templates CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS exams CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS questions CASCADE`)
+  await pool.query(`DROP TABLE IF EXISTS trainers CASCADE`)
+  console.log('Dropped old tables')
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS trainers (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -25,9 +39,6 @@ async function seed() {
       last_login TIMESTAMP
     )
   `)
-
-  await pool.query(`ALTER TABLE trainers ADD COLUMN IF NOT EXISTS mobile VARCHAR(15)`)
-  await pool.query(`ALTER TABLE trainers ADD COLUMN IF NOT EXISTS designation VARCHAR(100)`)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS questions (
@@ -53,8 +64,6 @@ async function seed() {
       updated_at TIMESTAMP DEFAULT NOW()
     )
   `)
-
-  await pool.query(`ALTER TABLE questions ADD COLUMN IF NOT EXISTS tag VARCHAR(20)`)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS exams (
@@ -214,9 +223,8 @@ async function seed() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_exam_questions_exam ON exam_questions(exam_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_roll_exam ON student_sessions(roll_number, exam_id)`)
 
-  console.log('All tables ready')
+  console.log('All tables created')
 
-  // Real CDC team — Login: email | Password: employee code
   const team = [
     { emp_id: '4500466', name: 'Vipin Yadav',          email: 'vipinyadav.cdc@mriu.edu.in',      role: 'master_admin', designation: 'Manager',                         mobile: '7508009698' },
     { emp_id: '2010830', name: 'Ankur Kumar Aggarwal', email: 'ankurkumaraggarwal@mru.edu.in',   role: 'master_admin', designation: 'Associate Head-Career Skills',     mobile: '9911888492' },
@@ -251,7 +259,6 @@ async function seed() {
     console.log('Seeded: ' + t.emp_id + ' | ' + t.name + ' | ' + t.role)
   }
 
-  console.log('')
   console.log('Done! 19 CDC team members seeded.')
   console.log('Login: email | Password: employee code')
   process.exit(0)
