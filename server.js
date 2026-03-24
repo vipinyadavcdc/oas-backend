@@ -9,13 +9,18 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(helmet());
 
-// CORS — allow frontend
+// Allow all Vercel preview URLs + localhost
 app.use(cors({
-  origin: [
-    'https://oas-frontend-nine.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:5173'
-  ],
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (
+      origin.endsWith('.vercel.app') ||
+      origin.startsWith('http://localhost')
+    ) {
+      return callback(null, true);
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
 app.options('*', cors());
