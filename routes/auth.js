@@ -5,20 +5,18 @@ const jwt = require('jsonwebtoken');
 const pool = require('../db/pool');
 const { authenticate, auditLog } = require('../middleware/auth');
 
-// POST /api/auth/login
-// Accepts: { emp_id: 'EMP001' or email: 'vipin@mrei.ac.in', password: '...' }
+// POST /api/auth/login — Login with email + employee code as password
 router.post('/login', async (req, res) => {
   const { emp_id, email, password } = req.body;
-  const identifier = emp_id || email;
+  const identifier = (email || emp_id || '').trim();
 
   if (!identifier || !password)
-    return res.status(400).json({ error: 'Employee ID (or email) and password required' });
+    return res.status(400).json({ error: 'Email and password required' });
 
   try {
-    // Allow login by emp_id OR email
     const result = await pool.query(
-      'SELECT * FROM trainers WHERE (emp_id = $1 OR email = $1) AND is_active = true',
-      [identifier.trim().toUpperCase() === identifier.trim() ? identifier.trim() : identifier.trim()]
+      'SELECT * FROM trainers WHERE (email = $1 OR emp_id = $1) AND is_active = true',
+      [identifier]
     );
 
     if (!result.rows.length)
@@ -29,7 +27,7 @@ router.post('/login', async (req, res) => {
     if (!valid)
       return res.status(401).json({ error: 'Invalid credentials' });
 
-   await pool.query('UPDATE trainers SET last_login = NOW() WHERE id = $1', [trainer.id]).catch(() => {});
+    await pool.query('UPDATE trainers SET last_login = NOW() WHERE id = $1', [trainer.id]).catch(() => {});
 
     const token = jwt.sign(
       { id: trainer.id, emp_id: trainer.emp_id, role: trainer.role },
@@ -47,6 +45,8 @@ router.post('/login', async (req, res) => {
         name: trainer.name,
         email: trainer.email,
         role: trainer.role,
+        designation: trainer.designation,
+        mobile: trainer.mobile,
         university: trainer.university,
         department: trainer.department
       }
@@ -72,7 +72,6 @@ router.post('/change-password', authenticate, async (req, res) => {
 
     const hash = await bcrypt.hash(new_password, 12);
     await pool.query('UPDATE trainers SET password_hash = $1 WHERE id = $2', [hash, req.trainer.id]);
-
     await auditLog(req.trainer.id, 'CHANGE_PASSWORD', 'trainer', req.trainer.id, {}, req.ip);
     res.json({ message: 'Password changed successfully' });
   } catch (err) {
