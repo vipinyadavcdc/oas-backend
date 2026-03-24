@@ -209,6 +209,8 @@ async function seed() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_exam_questions_exam ON exam_questions(exam_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_roll_exam ON student_sessions(roll_number, exam_id)`)
 
+  // Add tag column if not exists (migration)
+  await pool.query(`ALTER TABLE questions ADD COLUMN IF NOT EXISTS tag VARCHAR(20)`)
   console.log('All tables created')
 
   // 24 trainers — 4 super admins + 20 trainers
