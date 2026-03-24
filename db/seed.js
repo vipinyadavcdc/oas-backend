@@ -18,11 +18,16 @@ async function seed() {
       role VARCHAR(20) NOT NULL DEFAULT 'trainer',
       university VARCHAR(20) DEFAULT 'BOTH',
       department VARCHAR(100),
+      mobile VARCHAR(15),
+      designation VARCHAR(100),
       is_active BOOLEAN DEFAULT true,
       created_at TIMESTAMP DEFAULT NOW(),
       last_login TIMESTAMP
     )
   `)
+
+  await pool.query(`ALTER TABLE trainers ADD COLUMN IF NOT EXISTS mobile VARCHAR(15)`)
+  await pool.query(`ALTER TABLE trainers ADD COLUMN IF NOT EXISTS designation VARCHAR(100)`)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS questions (
@@ -30,6 +35,7 @@ async function seed() {
       trainer_id UUID REFERENCES trainers(id),
       section VARCHAR(50) NOT NULL,
       topic VARCHAR(100) NOT NULL,
+      tag VARCHAR(20),
       question_text TEXT NOT NULL,
       option_a TEXT NOT NULL,
       option_b TEXT NOT NULL,
@@ -47,6 +53,8 @@ async function seed() {
       updated_at TIMESTAMP DEFAULT NOW()
     )
   `)
+
+  await pool.query(`ALTER TABLE questions ADD COLUMN IF NOT EXISTS tag VARCHAR(20)`)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS exams (
@@ -124,9 +132,7 @@ async function seed() {
     )
   `)
 
-  await pool.query(`
-    ALTER TABLE student_answers ADD CONSTRAINT IF NOT EXISTS uniq_sess_q UNIQUE (session_id, question_id)
-  `)
+  await pool.query(`ALTER TABLE student_answers ADD CONSTRAINT IF NOT EXISTS uniq_sess_q UNIQUE (session_id, question_id)`)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS exam_results (
@@ -199,7 +205,6 @@ async function seed() {
     )
   `)
 
-  // Indexes
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_exam ON student_sessions(exam_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_roll ON student_sessions(roll_number)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_token ON student_sessions(session_token)`)
@@ -209,57 +214,46 @@ async function seed() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_exam_questions_exam ON exam_questions(exam_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_roll_exam ON student_sessions(roll_number, exam_id)`)
 
-  // Add tag column if not exists (migration)
-  await pool.query(`ALTER TABLE questions ADD COLUMN IF NOT EXISTS tag VARCHAR(20)`)
-  console.log('All tables created')
+  console.log('All tables ready')
 
-  // 24 trainers — 4 super admins + 20 trainers
-  // Password for everyone = their emp_id (e.g. EMP001)
-  const trainers = [
-    // Super Admins
-    { emp_id: 'EMP001', name: 'Vipin Yadav',      email: 'vipin@mrei.ac.in',      role: 'super_admin', department: 'CDC' },
-    { emp_id: 'EMP002', name: 'Ankur Sharma',     email: 'ankur@mrei.ac.in',      role: 'super_admin', department: 'CDC' },
-    { emp_id: 'EMP003', name: 'Kirti Gupta',      email: 'kirti@mrei.ac.in',      role: 'super_admin', department: 'CDC' },
-    { emp_id: 'EMP004', name: 'Harmeet Singh',    email: 'harmeet@mrei.ac.in',    role: 'super_admin', department: 'CDC' },
-    // Trainers
-    { emp_id: 'EMP005', name: 'Rahul Verma',      email: 'rahul.v@mrei.ac.in',    role: 'trainer', department: 'CSE' },
-    { emp_id: 'EMP006', name: 'Priya Mehta',      email: 'priya.m@mrei.ac.in',    role: 'trainer', department: 'CSE' },
-    { emp_id: 'EMP007', name: 'Amit Kumar',       email: 'amit.k@mrei.ac.in',     role: 'trainer', department: 'ECE' },
-    { emp_id: 'EMP008', name: 'Sneha Patel',      email: 'sneha.p@mrei.ac.in',    role: 'trainer', department: 'ECE' },
-    { emp_id: 'EMP009', name: 'Rohan Gupta',      email: 'rohan.g@mrei.ac.in',    role: 'trainer', department: 'ME' },
-    { emp_id: 'EMP010', name: 'Neha Singh',       email: 'neha.s@mrei.ac.in',     role: 'trainer', department: 'ME' },
-    { emp_id: 'EMP011', name: 'Vikash Yadav',     email: 'vikash.y@mrei.ac.in',   role: 'trainer', department: 'CE' },
-    { emp_id: 'EMP012', name: 'Pooja Sharma',     email: 'pooja.s@mrei.ac.in',    role: 'trainer', department: 'CE' },
-    { emp_id: 'EMP013', name: 'Deepak Raj',       email: 'deepak.r@mrei.ac.in',   role: 'trainer', department: 'IT' },
-    { emp_id: 'EMP014', name: 'Kavita Mishra',    email: 'kavita.m@mrei.ac.in',   role: 'trainer', department: 'IT' },
-    { emp_id: 'EMP015', name: 'Sanjay Tiwari',    email: 'sanjay.t@mrei.ac.in',   role: 'trainer', department: 'MBA' },
-    { emp_id: 'EMP016', name: 'Ritu Agarwal',     email: 'ritu.a@mrei.ac.in',     role: 'trainer', department: 'MBA' },
-    { emp_id: 'EMP017', name: 'Manish Dubey',     email: 'manish.d@mrei.ac.in',   role: 'trainer', department: 'BCA' },
-    { emp_id: 'EMP018', name: 'Sunita Joshi',     email: 'sunita.j@mrei.ac.in',   role: 'trainer', department: 'BCA' },
-    { emp_id: 'EMP019', name: 'Ajay Pandey',      email: 'ajay.p@mrei.ac.in',     role: 'trainer', department: 'MCA' },
-    { emp_id: 'EMP020', name: 'Renu Chauhan',     email: 'renu.c@mrei.ac.in',     role: 'trainer', department: 'MCA' },
-    { emp_id: 'EMP021', name: 'Suresh Pal',       email: 'suresh.p@mrei.ac.in',   role: 'trainer', department: 'EEE' },
-    { emp_id: 'EMP022', name: 'Meena Rawat',      email: 'meena.r@mrei.ac.in',    role: 'trainer', department: 'EEE' },
-    { emp_id: 'EMP023', name: 'Pankaj Saxena',    email: 'pankaj.s@mrei.ac.in',   role: 'trainer', department: 'BIOTECH' },
-    { emp_id: 'EMP024', name: 'Alka Srivastava',  email: 'alka.s@mrei.ac.in',     role: 'trainer', department: 'BIOTECH' },
+  // Real CDC team — Login: email | Password: employee code
+  const team = [
+    { emp_id: '4500466', name: 'Vipin Yadav',          email: 'vipinyadav.cdc@mriu.edu.in',      role: 'master_admin', designation: 'Manager',                         mobile: '7508009698' },
+    { emp_id: '2010830', name: 'Ankur Kumar Aggarwal', email: 'ankurkumaraggarwal@mru.edu.in',   role: 'master_admin', designation: 'Associate Head-Career Skills',     mobile: '9911888492' },
+    { emp_id: '5000706', name: 'Kirti Aggarwal',       email: 'kirtiaggarwal.set@mriu.edu.in',   role: 'super_admin',  designation: 'Manager- Career Skills',           mobile: '9899174007' },
+    { emp_id: '5700051', name: 'Harmeet Kaur',         email: 'harmeetkaur.sca@mriu.edu.in',     role: 'super_admin',  designation: 'Lead Technical- Career Skills',    mobile: '9928110309' },
+    { emp_id: '4500478', name: 'Divya Bahl',           email: 'divyabahl.cdc@mriu.edu.in',       role: 'trainer',      designation: 'Coordinator',                      mobile: '7503366363' },
+    { emp_id: '4500538', name: 'Susanta Bose',         email: 'susantabose.cdc@mriu.edu.in',     role: 'trainer',      designation: 'Head Career Skills',               mobile: '9953315901' },
+    { emp_id: '4500462', name: 'Prema Anand',          email: 'premaanand.cdc@mriu.edu.in',      role: 'trainer',      designation: 'Manager Trainee',                  mobile: '9811758154' },
+    { emp_id: '4500592', name: 'Shivangee Arora',      email: 'shivangeearora.cdc@mriu.edu.in',  role: 'trainer',      designation: 'Assistant Manager',                mobile: '8826911903' },
+    { emp_id: '4500495', name: 'Pranamika Verma',      email: 'pranamika.cdc@mriu.edu.in',       role: 'trainer',      designation: 'Manager -Career Skills',           mobile: '9811668432' },
+    { emp_id: '4500618', name: 'Prakash Chandra Jha',  email: 'prakashjha.cdc@mrvpl.in',         role: 'trainer',      designation: 'Deputy Manager-Career Skills',     mobile: '6239982945' },
+    { emp_id: '4500506', name: 'Sahil Nagpal',         email: 'sahilnagpal.cdc@mriu.edu.in',     role: 'trainer',      designation: 'Manager',                          mobile: '9953931475' },
+    { emp_id: '4500544', name: 'Priya Singh',          email: 'priyasingh.cdc@mriu.edu.in',      role: 'trainer',      designation: 'Asst. Manager',                    mobile: '9873030796' },
+    { emp_id: '2010794', name: 'Swapnil Vinod',        email: 'swapnilvinod@mru.edu.in',         role: 'trainer',      designation: 'Sr. Manager Career Skills',        mobile: '9910043046' },
+    { emp_id: '8500234', name: 'Snigdha',              email: 'snigdha.cdc@mrvpl.in',            role: 'trainer',      designation: 'Manager',                          mobile: '9873387116' },
+    { emp_id: '4500468', name: 'Dr. Monika Aggarwal',  email: 'monikaaggarwal.cdc@mriu.edu.in',  role: 'trainer',      designation: 'Deputy General Manager',           mobile: '9873634445' },
+    { emp_id: '8500679', name: 'Geetika',              email: 'geetika.cdc@mrvpl.in',            role: 'trainer',      designation: 'Assistant Manager-Career Skills',  mobile: '9053171150' },
+    { emp_id: '4500649', name: 'Karan Sardana',        email: 'karansardana.cdc@mriu.edu.in',    role: 'trainer',      designation: 'Sr. Manager -Career Skills',       mobile: '7838673733' },
+    { emp_id: '4500651', name: 'Avik Chakraborty',     email: 'avikchakraborty.cdc@mriu.edu.in', role: 'trainer',      designation: 'Senior Manager',                   mobile: '9880036081' },
+    { emp_id: '4500656', name: 'Amjad Chaudhary',      email: 'amjadchaudhary.cdc@mriu.edu.in',  role: 'trainer',      designation: 'Deputy Manager',                   mobile: '8427036871' },
   ]
 
-  for (const t of trainers) {
+  for (const t of team) {
     const hash = await bcrypt.hash(t.emp_id, 12)
     await pool.query(
-      `INSERT INTO trainers (emp_id, name, email, password_hash, role, department)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO trainers (emp_id, name, email, password_hash, role, mobile, designation)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (emp_id) DO UPDATE SET
-         password_hash = $4, role = $5, department = $6, is_active = true`,
-      [t.emp_id, t.name, t.email, hash, t.role, t.department]
+         name=$2, email=$3, password_hash=$4, role=$5, mobile=$6, designation=$7, is_active=true`,
+      [t.emp_id, t.name, t.email, hash, t.role, t.mobile, t.designation]
     )
-    console.log('Seeded: ' + t.emp_id + ' | ' + t.name + ' | ' + t.email + ' | ' + t.role)
+    console.log('Seeded: ' + t.emp_id + ' | ' + t.name + ' | ' + t.role)
   }
 
   console.log('')
-  console.log('Done! 24 users seeded.')
-  console.log('Login with emp_id (e.g. EMP001) OR email (e.g. vipin@mrei.ac.in)')
-  console.log('Password = emp_id (e.g. EMP001)')
+  console.log('Done! 19 CDC team members seeded.')
+  console.log('Login: email | Password: employee code')
   process.exit(0)
 }
 
