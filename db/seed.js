@@ -141,7 +141,7 @@ async function seed() {
     )
   `)
 
-  await pool.query(`ALTER TABLE student_answers ADD CONSTRAINT IF NOT EXISTS uniq_sess_q UNIQUE (session_id, question_id)`)
+  await pool.query(`ALTER TABLE student_answers ADD CONSTRAINT uniq_sess_q UNIQUE (session_id, question_id)`)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS exam_results (
