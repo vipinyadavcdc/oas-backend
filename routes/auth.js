@@ -6,16 +6,21 @@ const pool = require('../db/pool');
 const { authenticate, auditLog } = require('../middleware/auth');
 
 // POST /api/auth/login
+// Accepts: { emp_id: 'EMP001' or email: 'vipin@mrei.ac.in', password: '...' }
 router.post('/login', async (req, res) => {
-  const { emp_id, password } = req.body;
-  if (!emp_id || !password)
-    return res.status(400).json({ error: 'emp_id and password required' });
+  const { emp_id, email, password } = req.body;
+  const identifier = emp_id || email;
+
+  if (!identifier || !password)
+    return res.status(400).json({ error: 'Employee ID (or email) and password required' });
 
   try {
+    // Allow login by emp_id OR email
     const result = await pool.query(
-      'SELECT * FROM trainers WHERE emp_id = $1 AND is_active = true',
-      [emp_id.trim().toUpperCase()]
+      'SELECT * FROM trainers WHERE (emp_id = $1 OR email = $1) AND is_active = true',
+      [identifier.trim().toUpperCase() === identifier.trim() ? identifier.trim() : identifier.trim()]
     );
+
     if (!result.rows.length)
       return res.status(401).json({ error: 'Invalid credentials' });
 
@@ -24,7 +29,6 @@ router.post('/login', async (req, res) => {
     if (!valid)
       return res.status(401).json({ error: 'Invalid credentials' });
 
-    // Update last login
     await pool.query('UPDATE trainers SET last_login = NOW() WHERE id = $1', [trainer.id]);
 
     const token = jwt.sign(
@@ -67,7 +71,7 @@ router.post('/change-password', authenticate, async (req, res) => {
     if (!valid) return res.status(401).json({ error: 'Current password incorrect' });
 
     const hash = await bcrypt.hash(new_password, 12);
-    await pool.query('UPDATE trainers SET password_hash = $1, updated_at = NOW() WHERE id = $2', [hash, req.trainer.id]);
+    await pool.query('UPDATE trainers SET password_hash = $1 WHERE id = $2', [hash, req.trainer.id]);
 
     await auditLog(req.trainer.id, 'CHANGE_PASSWORD', 'trainer', req.trainer.id, {}, req.ip);
     res.json({ message: 'Password changed successfully' });
