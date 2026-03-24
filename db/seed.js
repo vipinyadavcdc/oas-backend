@@ -1,10 +1,23 @@
-// Run this ONCE on Railway to fix admin passwords:
-// node db/seed.js
 require('dotenv').config()
 const pool = require('./pool')
 const bcrypt = require('bcryptjs')
 
 async function seed() {
+  // Create tables first
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS trainers (
+      id SERIAL PRIMARY KEY,
+      emp_id VARCHAR(20) UNIQUE NOT NULL,
+      name VARCHAR(100) NOT NULL,
+      email VARCHAR(100) UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role VARCHAR(20) DEFAULT 'trainer',
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `)
+  console.log('✅ Table created')
+
   const admins = [
     { emp_id: 'EMP001', name: 'Vipin',   email: 'vipin@mrei.ac.in',   role: 'super_admin' },
     { emp_id: 'EMP002', name: 'Ankur',   email: 'ankur@mrei.ac.in',   role: 'super_admin' },
@@ -28,3 +41,13 @@ async function seed() {
 }
 
 seed().catch(err => { console.error('Seed failed:', err); process.exit(1) })
+```
+
+Then click **Commit changes** → wait ~60 seconds → check Deploy Logs again.
+
+You should see:
+```
+✅ Table created
+✅ Seeded: EMP001 (Vipin)
+✅ Seeded: EMP002 (Ankur)
+...
