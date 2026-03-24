@@ -6,20 +6,12 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 
-app.set('trust proxy', 1);  // ← ADD THIS
+app.set('trust proxy', 1);
 
 app.use(helmet());
 
-// ← REPLACE OLD CORS WITH THIS:
-app.use(cors({
-  origin: ['https://oas-frontend-nine.vercel.app',
-           'https://oas-frontend-kvurzsi9i-vipinyadavcdc-7372s-projects.vercel.app',
-           'http://localhost:5173'],
-  credentials: true,
-  methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
-}));
-app.options('*', cors());  // ← ADD THIS
+app.use(cors());
+app.options('*', cors());
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
