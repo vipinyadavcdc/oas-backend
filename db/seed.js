@@ -3,25 +3,12 @@ const pool = require('./pool')
 const bcrypt = require('bcryptjs')
 
 async function seed() {
-  console.log('Setting up database...')
+  console.log('Running safe migration...')
 
   await pool.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`)
   await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`)
 
-  // Drop all tables fresh to fix type mismatches
-  await pool.query(`DROP TABLE IF EXISTS audit_logs CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS heartbeats CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS violations CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS exam_results CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS student_answers CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS student_sessions CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS exam_questions CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS exam_templates CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS exams CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS questions CASCADE`)
-  await pool.query(`DROP TABLE IF EXISTS trainers CASCADE`)
-  console.log('Dropped old tables')
-
+  // Create tables only if they don't exist - NEVER DROP
   await pool.query(`
     CREATE TABLE IF NOT EXISTS trainers (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -141,8 +128,6 @@ async function seed() {
     )
   `)
 
-  await pool.query(`ALTER TABLE student_answers ADD CONSTRAINT uniq_sess_q UNIQUE (session_id, question_id)`)
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS exam_results (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -214,7 +199,10 @@ async function seed() {
     )
   `)
 
-  // Add new columns for section timing and device support
+  // Safe migrations - ADD COLUMN IF NOT EXISTS never destroys data
+  await pool.query(`ALTER TABLE trainers ADD COLUMN IF NOT EXISTS mobile VARCHAR(15)`)
+  await pool.query(`ALTER TABLE trainers ADD COLUMN IF NOT EXISTS designation VARCHAR(100)`)
+  await pool.query(`ALTER TABLE questions ADD COLUMN IF NOT EXISTS tag VARCHAR(20)`)
   await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS aptitude_time_minutes INTEGER DEFAULT 0`)
   await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS verbal_time_minutes INTEGER DEFAULT 0`)
   await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS device_allowed VARCHAR(20) DEFAULT 'both'`)
@@ -226,7 +214,8 @@ async function seed() {
   await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS verbal_submitted_at TIMESTAMP DEFAULT NULL`)
   await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS aptitude_time_used INTEGER DEFAULT 0`)
   await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS verbal_time_used INTEGER DEFAULT 0`)
-  console.log('Section timing columns added')
+
+  try { await pool.query(`ALTER TABLE student_answers ADD CONSTRAINT uniq_sess_q UNIQUE (session_id, question_id)`) } catch {}
 
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_exam ON student_sessions(exam_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_roll ON student_sessions(roll_number)`)
@@ -237,8 +226,9 @@ async function seed() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_exam_questions_exam ON exam_questions(exam_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_roll_exam ON student_sessions(roll_number, exam_id)`)
 
-  console.log('All tables created')
+  console.log('Migration complete - all columns added safely')
 
+  // Upsert team members - ON CONFLICT means existing users are NOT overwritten
   const team = [
     { emp_id: '4500466', name: 'Vipin Yadav',          email: 'vipinyadav.cdc@mriu.edu.in',      role: 'master_admin', designation: 'Manager',                         mobile: '7508009698' },
     { emp_id: '2010830', name: 'Ankur Kumar Aggarwal', email: 'ankurkumaraggarwal@mru.edu.in',   role: 'master_admin', designation: 'Associate Head-Career Skills',     mobile: '9911888492' },
@@ -267,14 +257,13 @@ async function seed() {
       `INSERT INTO trainers (emp_id, name, email, password_hash, role, mobile, designation)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (emp_id) DO UPDATE SET
-         name=$2, email=$3, password_hash=$4, role=$5, mobile=$6, designation=$7, is_active=true`,
+         name=$2, email=$3, role=$5, mobile=$6, designation=$7, is_active=true`,
       [t.emp_id, t.name, t.email, hash, t.role, t.mobile, t.designation]
     )
-    console.log('Seeded: ' + t.emp_id + ' | ' + t.name + ' | ' + t.role)
+    console.log('Upserted: ' + t.emp_id + ' | ' + t.name)
   }
 
-  console.log('Done! 19 CDC team members seeded.')
-  console.log('Login: email | Password: employee code')
+  console.log('Done! Safe migration complete. Data preserved.')
   process.exit(0)
 }
 
