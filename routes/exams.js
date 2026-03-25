@@ -93,7 +93,8 @@ router.post('/', authenticate, async (req, res) => {
        duration_minutes, start_time||null, end_time||null, room_code,
        marks_per_question||1, negative_marking||false, negative_marks||0.25,
        total, aptitude_count||0, verbal_count||0,
-       randomize_questions!==false, randomize_options!==false]
+       randomize_questions!==false, randomize_options!==false,
+       aptitude_time_minutes||0, verbal_time_minutes||0, device_allowed||'both']
     );
     const exam = examResult.rows[0];
 
