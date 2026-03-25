@@ -34,7 +34,7 @@ router.post('/verify', async (req, res) => {
   if (!room_code) return res.status(400).json({ error: 'Room code required' });
   try {
     const result = await pool.query(
-      'SELECT id,title,description,exam_type,university,department,section_filter,duration_minutes,start_time,end_time,total_questions,status FROM exams WHERE room_code=$1',
+      'SELECT id,title,description,exam_type,university,department,section_filter,duration_minutes,start_time,end_time,total_questions,status,aptitude_time_minutes,verbal_time_minutes,device_allowed,marks_per_question,negative_marking,negative_marks FROM exams WHERE room_code=$1',
       [room_code.toUpperCase().trim()]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Invalid room code' });
@@ -94,7 +94,30 @@ router.post('/start', async (req, res) => {
     );
     if (exam.status==='published') await client.query("UPDATE exams SET status='live' WHERE id=$1", [exam_id]);
     await client.query('COMMIT');
-    res.json({ session: sessRes.rows[0], questions: shuffledQuestions, exam: { id: exam.id, title: exam.title, duration_minutes: exam.duration_minutes, end_time: exam.end_time, marks_per_question: exam.marks_per_question, negative_marking: exam.negative_marking, negative_marks: exam.negative_marks, total_questions: exam.total_questions } });
+    // Split questions by section
+      const aptitudeQs = shuffledQuestions.filter(q => q.section === 'aptitude_reasoning')
+      const verbalQs = shuffledQuestions.filter(q => q.section === 'verbal')
+      const hasBothSections = aptitudeQs.length > 0 && verbalQs.length > 0
+
+      res.json({
+        session: sessRes.rows[0],
+        questions: shuffledQuestions,
+        aptitude_questions: aptitudeQs,
+        verbal_questions: verbalQs,
+        has_both_sections: hasBothSections,
+        exam: {
+          id: exam.id, title: exam.title,
+          duration_minutes: exam.duration_minutes,
+          end_time: exam.end_time,
+          aptitude_time_minutes: exam.aptitude_time_minutes || 0,
+          verbal_time_minutes: exam.verbal_time_minutes || 0,
+          device_allowed: exam.device_allowed || 'both',
+          marks_per_question: exam.marks_per_question,
+          negative_marking: exam.negative_marking,
+          negative_marks: exam.negative_marks,
+          total_questions: exam.total_questions
+        }
+      });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ error: 'Server error' }); }
   finally { client.release(); }
 });
@@ -170,6 +193,111 @@ router.post('/submit', async (req, res) => {
     res.json({ message: 'Exam submitted successfully', time_taken_seconds: time_taken });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ error: 'Server error' }); }
   finally { client.release(); }
+});
+
+// POST /api/exam/submit-section — submit current section, move to next
+router.post('/submit-section', async (req, res) => {
+  const { session_token, section } = req.body
+  if (!session_token || !section) return res.status(400).json({ error: 'session_token and section required' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const sess = await client.query("SELECT * FROM student_sessions WHERE session_token=$1 AND status='active'", [session_token])
+    if (!sess.rows.length) return res.status(403).json({ error: 'Invalid or expired session' })
+    const session = sess.rows[0]
+    const now = new Date()
+
+    if (section === 'aptitude_reasoning') {
+      const timeUsed = session.aptitude_started_at ?
+        Math.floor((now - new Date(session.aptitude_started_at)) / 1000) : 0
+      await client.query(
+        'UPDATE student_sessions SET aptitude_submitted_at=NOW(), aptitude_time_used=$1, current_section=$2 WHERE id=$3',
+        [timeUsed, 'verbal', session.id]
+      )
+    } else {
+      const timeUsed = session.verbal_started_at ?
+        Math.floor((now - new Date(session.verbal_started_at)) / 1000) : 0
+      await client.query(
+        'UPDATE student_sessions SET verbal_submitted_at=NOW(), verbal_time_used=$1, current_section=$2 WHERE id=$3',
+        [timeUsed, 'aptitude_reasoning', session.id]
+      )
+    }
+
+    await client.query('COMMIT')
+    res.json({ success: true, next_section: section === 'aptitude_reasoning' ? 'verbal' : 'aptitude_reasoning' })
+  } catch (err) {
+    await client.query('ROLLBACK')
+    console.error(err)
+    res.status(500).json({ error: 'Server error' })
+  } finally { client.release() }
+})
+
+// POST /api/exam/start-section — record when student starts a section
+router.post('/start-section', async (req, res) => {
+  const { session_token, section } = req.body
+  if (!session_token || !section) return res.status(400).json({ error: 'Required fields missing' })
+  try {
+    const sess = await pool.query("SELECT id FROM student_sessions WHERE session_token=$1 AND status='active'", [session_token])
+    if (!sess.rows.length) return res.status(403).json({ error: 'Invalid session' })
+    const col = section === 'aptitude_reasoning' ? 'aptitude_started_at' : 'verbal_started_at'
+    await pool.query(`UPDATE student_sessions SET ${col}=NOW(), current_section=$1 WHERE id=$2`, [section, sess.rows[0].id])
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' })
+  }
+})
+
+// POST /api/exam/submit-section — submit current section and move to next
+router.post('/submit-section', async (req, res) => {
+  const { session_token, section } = req.body;
+  if (!session_token || !section) return res.status(400).json({ error: 'session_token and section required' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const sess = await client.query(
+      "SELECT ss.*, e.aptitude_time_minutes, e.verbal_time_minutes FROM student_sessions ss JOIN exams e ON ss.exam_id=e.id WHERE ss.session_token=$1 AND ss.status='active'",
+      [session_token]
+    );
+    if (!sess.rows.length) return res.status(403).json({ error: 'Invalid or expired session' });
+    const s = sess.rows[0];
+    const now = new Date();
+
+    if (section === 'aptitude_reasoning') {
+      const started = s.aptitude_started_at ? new Date(s.aptitude_started_at) : new Date(s.started_at);
+      const timeUsed = Math.floor((now - started) / 1000);
+      await client.query(
+        'UPDATE student_sessions SET aptitude_submitted_at=NOW(), aptitude_time_used=$1, current_section=$2 WHERE id=$3',
+        [timeUsed, 'verbal', s.id]
+      );
+    } else {
+      const started = s.verbal_started_at ? new Date(s.verbal_started_at) : new Date(s.started_at);
+      const timeUsed = Math.floor((now - started) / 1000);
+      await client.query(
+        'UPDATE student_sessions SET verbal_submitted_at=NOW(), verbal_time_used=$1, current_section=$2 WHERE id=$3',
+        [timeUsed, 'aptitude_reasoning', s.id]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, next_section: section === 'aptitude_reasoning' ? 'verbal' : 'aptitude_reasoning' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  } finally { client.release(); }
+});
+
+// POST /api/exam/start-section — record when student starts a section
+router.post('/start-section', async (req, res) => {
+  const { session_token, section } = req.body;
+  if (!session_token || !section) return res.status(400).json({ error: 'Required fields missing' });
+  try {
+    const sess = await pool.query("SELECT id FROM student_sessions WHERE session_token=$1 AND status='active'", [session_token]);
+    if (!sess.rows.length) return res.status(403).json({ error: 'Invalid session' });
+    const col = section === 'aptitude_reasoning' ? 'aptitude_started_at' : 'verbal_started_at';
+    await pool.query('UPDATE student_sessions SET ' + col + '=NOW(), current_section=$1 WHERE id=$2', [section, sess.rows[0].id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
 // Auto-submit active sessions when end_time passes — runs every 60 seconds
