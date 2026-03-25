@@ -105,8 +105,8 @@ router.post('/upload', authenticate, upload.single('file'), async (req, res) => 
         const dup = await pool.query('SELECT id FROM questions WHERE question_text=$1 AND is_active=true', [String(row.question_text).trim()]);
         if (dup.rows.length) { duplicates.push({ row: rowNum, question: String(row.question_text).substring(0,60) }); continue; }
         const res2 = await pool.query(
-          'INSERT INTO questions (trainer_id,section,topic,question_text,option_a,option_b,option_c,option_d,correct_option,explanation,difficulty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
-          [req.trainer.id, section, String(row.topic).trim(), String(row.question_text).trim(), String(row.option_a), String(row.option_b), String(row.option_c), String(row.option_d), correct, row.explanation||null, row.difficulty||'medium']
+          'INSERT INTO questions (trainer_id,section,topic,tag,question_text,option_a,option_b,option_c,option_d,correct_option,explanation,difficulty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',
+          [req.trainer.id, section, String(row.topic).trim(), row.tag ? String(row.tag).trim().toUpperCase() : null, String(row.question_text).trim(), String(row.option_a), String(row.option_b), String(row.option_c), String(row.option_d), correct, row.explanation||null, row.difficulty||'medium']
         );
         inserted.push(res2.rows[0].id);
       } catch (e) { errors.push({ row: rowNum, error: e.message }); }
@@ -141,25 +141,14 @@ router.patch('/:id', authenticate, async (req, res) => {
 // DELETE /api/questions/:id
 router.delete('/:id', authenticate, async (req, res) => {
   try {
-    const check = await pool.query('SELECT trainer_id, is_locked FROM questions WHERE id=$1', [req.params.id]);
+    const check = await pool.query('SELECT trainer_id FROM questions WHERE id=$1', [req.params.id]);
     if (!check.rows.length) return res.status(404).json({ error: 'Question not found' });
-    if (!['super_admin','master_admin'].includes(req.trainer.role) && check.rows[0].trainer_id !== req.trainer.id)
+    if (req.trainer.role !== 'super_admin' && check.rows[0].trainer_id !== req.trainer.id)
       return res.status(403).json({ error: 'You can only delete your own questions' });
-    if (check.rows[0].is_locked && req.trainer.role !== 'master_admin')
-      return res.status(403).json({ error: 'Question is locked. Only master admin can delete locked questions.' });
-
-    if (req.trainer.role === 'master_admin') {
-      await pool.query('DELETE FROM student_answers WHERE question_id=$1', [req.params.id]);
-      await pool.query('DELETE FROM exam_questions WHERE question_id=$1', [req.params.id]);
-      await pool.query('DELETE FROM questions WHERE id=$1', [req.params.id]);
-      await auditLog(req.trainer.id, 'HARD_DELETE_QUESTION', 'question', req.params.id, {}, req.ip);
-      res.json({ message: 'Question permanently deleted' });
-    } else {
-      await pool.query('UPDATE questions SET is_active=false, updated_at=NOW() WHERE id=$1', [req.params.id]);
-      await auditLog(req.trainer.id, 'DELETE_QUESTION', 'question', req.params.id, {}, req.ip);
-      res.json({ message: 'Question deleted' });
-    }
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Server error' }); }
+    await pool.query('UPDATE questions SET is_active=false, updated_at=NOW() WHERE id=$1', [req.params.id]);
+    await auditLog(req.trainer.id, 'DELETE_QUESTION', 'question', req.params.id, {}, req.ip);
+    res.json({ message: 'Question deleted' });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
 module.exports = router;
