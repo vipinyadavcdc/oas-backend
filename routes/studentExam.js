@@ -42,7 +42,12 @@ router.post('/verify', async (req, res) => {
     if (exam.status==='draft') return res.status(403).json({ error: 'Exam not published yet' });
     if (exam.status==='ended') return res.status(403).json({ error: 'Exam has ended' });
     const now = new Date();
-    if (exam.start_time && new Date(exam.start_time)>now) return res.status(403).json({ error: 'Exam starts at '+new Date(exam.start_time).toLocaleString() });
+    if (exam.start_time && new Date(exam.start_time)>now) {
+      const st = new Date(exam.start_time);
+      const timeStr = st.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      const dateStr = st.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+      return res.status(403).json({ error: 'Exam window opens at ' + timeStr + ' on ' + dateStr + '. Please wait and try again.' });
+    }
     if (exam.end_time && new Date(exam.end_time)<now) return res.status(403).json({ error: 'Exam window has passed' });
     res.json({ exam });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -89,7 +94,7 @@ router.post('/start', async (req, res) => {
     );
     if (exam.status==='published') await client.query("UPDATE exams SET status='live' WHERE id=$1", [exam_id]);
     await client.query('COMMIT');
-    res.json({ session: sessRes.rows[0], questions: shuffledQuestions, exam: { id: exam.id, title: exam.title, duration_minutes: exam.duration_minutes, marks_per_question: exam.marks_per_question, negative_marking: exam.negative_marking, negative_marks: exam.negative_marks, total_questions: exam.total_questions } });
+    res.json({ session: sessRes.rows[0], questions: shuffledQuestions, exam: { id: exam.id, title: exam.title, duration_minutes: exam.duration_minutes, end_time: exam.end_time, marks_per_question: exam.marks_per_question, negative_marking: exam.negative_marking, negative_marks: exam.negative_marks, total_questions: exam.total_questions } });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ error: 'Server error' }); }
   finally { client.release(); }
 });
@@ -166,5 +171,41 @@ router.post('/submit', async (req, res) => {
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ error: 'Server error' }); }
   finally { client.release(); }
 });
+
+// Auto-submit active sessions when end_time passes — runs every 60 seconds
+setInterval(async () => {
+  try {
+    const expired = await pool.query(
+      `SELECT ss.id, ss.exam_id FROM student_sessions ss
+       JOIN exams e ON ss.exam_id = e.id
+       WHERE ss.status = 'active'
+       AND e.end_time IS NOT NULL
+       AND e.end_time < NOW()`
+    );
+    for (const s of expired.rows) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const time_taken = await pool.query(
+          'SELECT EXTRACT(EPOCH FROM (NOW() - started_at))::int as secs FROM student_sessions WHERE id=$1',
+          [s.id]
+        );
+        await client.query(
+          "UPDATE student_sessions SET status='auto_submitted', submitted_at=NOW(), time_taken_seconds=$1 WHERE id=$2",
+          [time_taken.rows[0].secs, s.id]
+        );
+        const { calculateResult } = require('./exams');
+        await calculateResult(client, s.id, s.exam_id);
+        await client.query('COMMIT');
+        console.log('Auto-submitted session ' + s.id + ' (end_time passed)');
+      } catch (e) {
+        await client.query('ROLLBACK');
+        console.error('Auto-submit error:', e.message);
+      } finally { client.release(); }
+    }
+  } catch (e) {
+    console.error('Auto-submit cron error:', e.message);
+  }
+}, 60000);
 
 module.exports = router;
