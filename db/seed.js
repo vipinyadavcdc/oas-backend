@@ -214,7 +214,21 @@ async function seed() {
     )
   `)
 
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_exam ON student_sessions(exam_id)`)
+  // Add new columns for section timing and device support
+  await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS aptitude_time_minutes INTEGER DEFAULT 0`)
+  await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS verbal_time_minutes INTEGER DEFAULT 0`)
+  await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS device_allowed VARCHAR(20) DEFAULT 'both'`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS current_section VARCHAR(20) DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS section_order JSONB DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS aptitude_started_at TIMESTAMP DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS aptitude_submitted_at TIMESTAMP DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS verbal_started_at TIMESTAMP DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS verbal_submitted_at TIMESTAMP DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS aptitude_time_used INTEGER DEFAULT 0`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS verbal_time_used INTEGER DEFAULT 0`)
+  console.log('Section timing columns added')
+
+  await pool.query(\`CREATE INDEX IF NOT EXISTS idx_sessions_exam ON student_sessions(exam_id)\`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_roll ON student_sessions(roll_number)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_token ON student_sessions(session_token)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_answers_session ON student_answers(session_id)`)
@@ -223,6 +237,18 @@ async function seed() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_exam_questions_exam ON exam_questions(exam_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_roll_exam ON student_sessions(roll_number, exam_id)`)
 
+  // Section timing and device support columns
+  await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS aptitude_time_minutes INTEGER DEFAULT 0`)
+  await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS verbal_time_minutes INTEGER DEFAULT 0`)
+  await pool.query(`ALTER TABLE exams ADD COLUMN IF NOT EXISTS device_allowed VARCHAR(20) DEFAULT 'both'`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS current_section VARCHAR(20) DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS section_order JSONB DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS aptitude_started_at TIMESTAMP DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS aptitude_submitted_at TIMESTAMP DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS verbal_started_at TIMESTAMP DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS verbal_submitted_at TIMESTAMP DEFAULT NULL`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS aptitude_time_used INTEGER DEFAULT 0`)
+  await pool.query(`ALTER TABLE student_sessions ADD COLUMN IF NOT EXISTS verbal_time_used INTEGER DEFAULT 0`)
   console.log('All tables created')
 
   const team = [
