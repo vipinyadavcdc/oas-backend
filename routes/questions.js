@@ -151,4 +151,44 @@ router.delete('/:id', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+
+const TOPIC_TAG_MAP = {
+  'Number System (General)': 'NS', 'Unit Digit': 'UD', 'Remainder Theorem': 'RT',
+  'Factorial': 'FAC', 'LCM & HCF': 'LCM', 'Divisibility': 'DIV',
+  'Profit & Loss': 'PL', 'Discount': 'DISC', 'Simple Interest': 'SI',
+  'Compound Interest': 'CI', 'Time & Work': 'TW', 'Pipes & Cisterns': 'PC',
+  'Speed Distance Time': 'SDT', 'Boats & Streams': 'BS', 'Trains': 'TRN',
+  'Percentage': 'PCT', 'Ratio & Proportion': 'RP', 'Averages': 'AVG',
+  'Mixtures & Alligation': 'MIX', 'Partnership': 'PART', 'Ages': 'AGE',
+  'Simplification': 'SIMP', 'Approximation': 'APPRX', 'Quadratic Equations': 'QE',
+  'Surds & Indices': 'SURD', 'Mensuration 2D': 'MEN2', 'Mensuration 3D': 'MEN3',
+  'Probability': 'PROB', 'Permutation & Combination': 'PNC', 'Series & Sequences': 'SEQ',
+  'Coding Decoding': 'CD', 'Blood Relations': 'BR', 'Direction Sense': 'DS',
+  'Seating Arrangement': 'SEAT', 'Puzzles': 'PUZ', 'Syllogism': 'SYL',
+  'Inequalities': 'INEQ', 'Input Output': 'IO', 'Analogies (Reasoning)': 'ANA',
+  'Classification': 'CLS', 'Number Series': 'NSER', 'Statement & Conclusion': 'STC',
+  'Cause & Effect': 'CAE', 'Critical Reasoning': 'CR',
+  'Synonyms': 'SYN', 'Antonyms': 'ANT', 'Analogies (Verbal)': 'VANA',
+  'Spotting Errors': 'SE', 'Sentence Correction': 'SCOR', 'Fill in the Blanks': 'FIB',
+  'Cloze Test': 'CLZ', 'Idioms & Phrases': 'IP', 'One Word Substitution': 'OWS',
+  'Word Meaning in Context': 'WMC', 'Para Jumbles': 'PJ', 'Para Summary': 'PS'
+};
+
+// POST /api/questions/fix-tags — one time fix for null tags
+router.post('/fix-tags', authenticate, async (req, res) => {
+  if (!['master_admin','super_admin'].includes(req.trainer.role))
+    return res.status(403).json({ error: 'Not authorized' });
+  try {
+    let updated = 0;
+    for (const [topic, tag] of Object.entries(TOPIC_TAG_MAP)) {
+      const result = await pool.query(
+        'UPDATE questions SET tag=$1 WHERE topic=$2 AND (tag IS NULL OR tag=\'\') RETURNING id',
+        [tag, topic]
+      );
+      updated += result.rowCount;
+    }
+    res.json({ message: 'Tags fixed!', updated });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Server error' }); }
+});
+
 module.exports = router;
