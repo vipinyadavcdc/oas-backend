@@ -18,6 +18,8 @@ router.get('/:examId', authenticate, async (req, res) => {
     const students = await pool.query(
       `SELECT ss.id, ss.name, ss.roll_number, ss.department, ss.section,
          ss.started_at, ss.status, ss.is_flagged,
+         ss.current_section, ss.aptitude_submitted_at, ss.verbal_submitted_at,
+         ss.aptitude_time_used, ss.verbal_time_used,
          (SELECT COUNT(*) FROM student_answers sa WHERE sa.session_id=ss.id AND sa.selected_option IS NOT NULL) as answered,
          (SELECT COUNT(*) FROM violations v WHERE v.session_id=ss.id AND v.violation_type='tab_switch') as tab_switches,
          (SELECT COUNT(*) FROM violations v WHERE v.session_id=ss.id AND v.violation_type='split_screen') as split_screens,

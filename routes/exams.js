@@ -45,8 +45,9 @@ router.post('/', authenticate, async (req, res) => {
     duration_minutes, start_time, end_time, marks_per_question,
     negative_marking, negative_marks, aptitude_count, verbal_count,
     randomize_questions, randomize_options,
-    question_ids,    // old manual selection
-    question_spec    // new: [{ tag, difficulty, count, section }]
+    aptitude_time_minutes, verbal_time_minutes, device_allowed,
+    question_ids,
+    question_spec
   } = req.body;
 
   if (!title || !exam_type || !university || !duration_minutes)
@@ -85,8 +86,9 @@ router.post('/', authenticate, async (req, res) => {
     const examResult = await client.query(
       `INSERT INTO exams (trainer_id,title,description,exam_type,university,department,section_filter,
         duration_minutes,start_time,end_time,room_code,marks_per_question,negative_marking,negative_marks,
-        total_questions,aptitude_count,verbal_count,randomize_questions,randomize_options)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
+        total_questions,aptitude_count,verbal_count,randomize_questions,randomize_options,
+        aptitude_time_minutes,verbal_time_minutes,device_allowed)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
       [req.trainer.id, title, description, exam_type, university, department, section_filter,
        duration_minutes, start_time||null, end_time||null, room_code,
        marks_per_question||1, negative_marking||false, negative_marks||0.25,
@@ -117,7 +119,8 @@ router.post('/', authenticate, async (req, res) => {
 router.patch('/:id', authenticate, async (req, res) => {
   const allowed = ['title','description','exam_type','university','department','section_filter',
     'duration_minutes','start_time','end_time','marks_per_question','negative_marking',
-    'negative_marks','randomize_questions','randomize_options','status'];
+    'negative_marks','randomize_questions','randomize_options','status',
+    'aptitude_time_minutes','verbal_time_minutes','device_allowed'];
   const updates = []; const values = []; let i = 1;
   for (const f of allowed) {
     if (req.body[f] !== undefined) { updates.push(f + '=$' + i++); values.push(req.body[f]); }

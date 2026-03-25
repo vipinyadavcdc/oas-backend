@@ -40,6 +40,8 @@ router.get('/:examId', authenticate, async (req, res) => {
          ss.university, ss.department, ss.section,
          ss.started_at, ss.submitted_at, ss.time_taken_seconds,
          ss.status, ss.is_flagged, ss.ip_address,
+         ss.current_section, ss.aptitude_submitted_at, ss.verbal_submitted_at,
+         ss.aptitude_time_used, ss.verbal_time_used,
          er.total_questions, er.attempted, er.correct, er.incorrect, er.skipped,
          er.final_score, er.max_score, er.percentage,
          er.aptitude_score, er.verbal_score,
