@@ -251,5 +251,229 @@ async function calculateResult(client, sessionId, examId) {
   );
 }
 
+
+// POST /api/exams/:id/end — end exam and auto-submit all active students
+router.post('/:id/end', authenticate, async (req, res) => {
+  if (!['super_admin','master_admin'].includes(req.trainer.role))
+    return res.status(403).json({ error: 'Not authorized' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const active = await client.query(
+      "SELECT id FROM student_sessions WHERE exam_id=$1 AND status='active'", [req.params.id]
+    );
+    for (const s of active.rows) {
+      const timeTaken = await client.query(
+        'SELECT EXTRACT(EPOCH FROM (NOW() - started_at))::int as secs FROM student_sessions WHERE id=$1', [s.id]
+      );
+      await client.query(
+        "UPDATE student_sessions SET status='auto_submitted', submitted_at=NOW(), time_taken_seconds=$1 WHERE id=$2",
+        [timeTaken.rows[0].secs, s.id]
+      );
+      await calculateResult(client, s.id, req.params.id);
+    }
+    await client.query("UPDATE exams SET status='ended', updated_at=NOW() WHERE id=$1", [req.params.id]);
+    await client.query('COMMIT');
+    await auditLog(req.trainer.id, 'END_EXAM', 'exam', req.params.id, { count: active.rows.length }, req.ip);
+    res.json({ message: 'Exam ended. ' + active.rows.length + ' students auto-submitted.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  } finally { client.release(); }
+});
+
+// POST /api/exams/:id/extend-time — add minutes to all active students
+router.post('/:id/extend-time', authenticate, async (req, res) => {
+  if (!['super_admin','master_admin'].includes(req.trainer.role))
+    return res.status(403).json({ error: 'Not authorized' });
+  const { minutes } = req.body;
+  if (!minutes || minutes < 1) return res.status(400).json({ error: 'Invalid minutes' });
+  try {
+    const active = await pool.query(
+      "SELECT id, session_token FROM student_sessions WHERE exam_id=$1 AND status='active'", [req.params.id]
+    );
+    // Store extension in violations table as a special record for heartbeat pickup
+    for (const s of active.rows) {
+      await pool.query(
+        "INSERT INTO violations (session_id, violation_type, details) VALUES ($1, 'time_extended', $2)",
+        [s.id, JSON.stringify({ minutes, granted_at: new Date().toISOString() })]
+      );
+    }
+    await auditLog(req.trainer.id, 'EXTEND_TIME', 'exam', req.params.id, { minutes, students: active.rows.length }, req.ip);
+    res.json({ message: '+' + minutes + ' minutes added to ' + active.rows.length + ' active students.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/exams/:id — hard delete exam and all related data
+router.delete('/:id', authenticate, async (req, res) => {
+  if (req.trainer.role !== 'master_admin')
+    return res.status(403).json({ error: 'Only master admin can delete exams' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Delete in order to respect foreign keys
+    await client.query('DELETE FROM violations WHERE session_id IN (SELECT id FROM student_sessions WHERE exam_id=$1)', [req.params.id]);
+    await client.query('DELETE FROM heartbeats WHERE session_id IN (SELECT id FROM student_sessions WHERE exam_id=$1)', [req.params.id]);
+    await client.query('DELETE FROM student_answers WHERE session_id IN (SELECT id FROM student_sessions WHERE exam_id=$1)', [req.params.id]);
+    await client.query('DELETE FROM exam_results WHERE exam_id=$1', [req.params.id]);
+    await client.query('DELETE FROM student_sessions WHERE exam_id=$1', [req.params.id]);
+    await client.query('DELETE FROM exam_questions WHERE exam_id=$1', [req.params.id]);
+    await client.query('DELETE FROM exams WHERE id=$1', [req.params.id]);
+    await client.query('COMMIT');
+    await auditLog(req.trainer.id, 'DELETE_EXAM', 'exam', req.params.id, {}, req.ip);
+    res.json({ message: 'Exam permanently deleted' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  } finally { client.release(); }
+});
+
+
+// POST /api/exams/:id/unpublish — move back to draft
+router.post('/:id/unpublish', authenticate, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE exams SET status='draft', updated_at=NOW() WHERE id=$1 AND (trainer_id=$2 OR $3 IN ('super_admin','master_admin')) RETURNING *",
+      [req.params.id, req.trainer.id, req.trainer.role]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Exam not found or unauthorized' });
+    await auditLog(req.trainer.id, 'UNPUBLISH_EXAM', 'exam', req.params.id, {}, req.ip);
+    res.json({ exam: result.rows[0] });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// POST /api/exams/:id/end — end exam and auto-submit all active students
+router.post('/:id/end', authenticate, requireSuperAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const active = await client.query(
+      "SELECT id FROM student_sessions WHERE exam_id=$1 AND status='active'",
+      [req.params.id]
+    );
+    for (const s of active.rows) {
+      const time_taken = await client.query(
+        'SELECT EXTRACT(EPOCH FROM (NOW() - started_at))::int as secs FROM student_sessions WHERE id=$1',
+        [s.id]
+      );
+      await client.query(
+        "UPDATE student_sessions SET status='auto_submitted', submitted_at=NOW(), time_taken_seconds=$1 WHERE id=$2",
+        [time_taken.rows[0].secs, s.id]
+      );
+      await calculateResult(client, s.id, req.params.id);
+    }
+    await client.query("UPDATE exams SET status='ended', updated_at=NOW() WHERE id=$1", [req.params.id]);
+    await client.query('COMMIT');
+    await auditLog(req.trainer.id, 'END_EXAM', 'exam', req.params.id, { auto_submitted: active.rows.length }, req.ip);
+    res.json({ message: 'Exam ended. ' + active.rows.length + ' students auto-submitted.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'Server error' });
+  } finally { client.release(); }
+});
+
+// POST /api/exams/:id/extend-time — add extra minutes to all active students
+router.post('/:id/extend-time', authenticate, requireSuperAdmin, async (req, res) => {
+  const { extra_minutes } = req.body;
+  if (!extra_minutes || extra_minutes < 1) return res.status(400).json({ error: 'Invalid minutes' });
+  try {
+    const active = await pool.query(
+      "SELECT id FROM student_sessions WHERE exam_id=$1 AND status='active'",
+      [req.params.id]
+    );
+    await pool.query(
+      'INSERT INTO violations (session_id, violation_type, details) SELECT id, $1, $2 FROM student_sessions WHERE exam_id=$3 AND status=$4',
+      ['time_extended', JSON.stringify({ extra_minutes }), req.params.id, 'active']
+    );
+    await auditLog(req.trainer.id, 'EXTEND_TIME', 'exam', req.params.id, { extra_minutes, students: active.rows.length }, req.ip);
+    res.json({ message: 'Time extended for ' + active.rows.length + ' students', extra_minutes });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// DELETE /api/exams/:id — hard delete exam and all related data
+router.delete('/:id', authenticate, async (req, res) => {
+  if (!['master_admin'].includes(req.trainer.role))
+    return res.status(403).json({ error: 'Only master admin can delete exams' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Get session ids first
+    const sessions = await client.query('SELECT id FROM student_sessions WHERE exam_id=$1', [req.params.id]);
+    const sessionIds = sessions.rows.map(s => s.id);
+    if (sessionIds.length > 0) {
+      await client.query('DELETE FROM student_answers WHERE session_id = ANY($1)', [sessionIds]);
+      await client.query('DELETE FROM violations WHERE session_id = ANY($1)', [sessionIds]);
+      await client.query('DELETE FROM heartbeats WHERE session_id = ANY($1)', [sessionIds]);
+      await client.query('DELETE FROM exam_results WHERE session_id = ANY($1)', [sessionIds]);
+      await client.query('DELETE FROM student_sessions WHERE exam_id=$1', [req.params.id]);
+    }
+    await client.query('DELETE FROM exam_questions WHERE exam_id=$1', [req.params.id]);
+    await client.query('DELETE FROM exams WHERE id=$1', [req.params.id]);
+    await client.query('COMMIT');
+    await auditLog(req.trainer.id, 'DELETE_EXAM', 'exam', req.params.id, { sessions_deleted: sessionIds.length }, req.ip);
+    res.json({ message: 'Exam permanently deleted' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  } finally { client.release(); }
+});
+
+
+// DELETE /api/exams/:id — hard delete (master_admin only)
+router.delete('/:id', authenticate, async (req, res) => {
+  if (!['master_admin'].includes(req.trainer.role))
+    return res.status(403).json({ error: 'Only master admin can delete exams' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const exam = await client.query('SELECT * FROM exams WHERE id=$1', [req.params.id]);
+    if (!exam.rows.length) return res.status(404).json({ error: 'Exam not found' });
+    // Delete in order to respect foreign keys
+    await client.query('DELETE FROM violations WHERE session_id IN (SELECT id FROM student_sessions WHERE exam_id=$1)', [req.params.id]);
+    await client.query('DELETE FROM heartbeats WHERE session_id IN (SELECT id FROM student_sessions WHERE exam_id=$1)', [req.params.id]);
+    await client.query('DELETE FROM student_answers WHERE session_id IN (SELECT id FROM student_sessions WHERE exam_id=$1)', [req.params.id]);
+    await client.query('DELETE FROM exam_results WHERE exam_id=$1', [req.params.id]);
+    await client.query('DELETE FROM student_sessions WHERE exam_id=$1', [req.params.id]);
+    await client.query('DELETE FROM exam_questions WHERE exam_id=$1', [req.params.id]);
+    await client.query('DELETE FROM exams WHERE id=$1', [req.params.id]);
+    await client.query('COMMIT');
+    await auditLog(req.trainer.id, 'DELETE_EXAM', 'exam', req.params.id, { title: exam.rows[0].title }, req.ip);
+    res.json({ message: 'Exam permanently deleted' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  } finally { client.release(); }
+});
+
+// POST /api/exams/:id/extend-time — add minutes to all active students
+router.post('/:id/extend-time', authenticate, async (req, res) => {
+  if (!['master_admin','super_admin'].includes(req.trainer.role))
+    return res.status(403).json({ error: 'Not authorized' });
+  const { minutes } = req.body;
+  if (!minutes || minutes < 1) return res.status(400).json({ error: 'Invalid minutes' });
+  try {
+    const active = await pool.query(
+      "SELECT id FROM student_sessions WHERE exam_id=$1 AND status='active'",
+      [req.params.id]
+    );
+    // Store extension as a violation record with type 'time_extended'
+    for (const s of active.rows) {
+      await pool.query(
+        "INSERT INTO violations (session_id, violation_type, details) VALUES ($1, 'time_extended', $2)",
+        [s.id, JSON.stringify({ minutes, added_by: req.trainer.name, added_at: new Date() })]
+      );
+    }
+    await auditLog(req.trainer.id, 'EXTEND_TIME', 'exam', req.params.id, { minutes, affected: active.rows.length }, req.ip);
+    res.json({ message: `Added ${minutes} minutes to ${active.rows.length} active students` });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Server error' }); }
+});
+
 module.exports = router;
 module.exports.calculateResult = calculateResult;

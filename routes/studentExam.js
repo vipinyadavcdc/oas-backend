@@ -71,8 +71,27 @@ router.post('/start', async (req, res) => {
       if (existing.status !== 'active') return res.status(400).json({ error: 'You have already submitted this exam' });
       const sess = await client.query('SELECT * FROM student_sessions WHERE id=$1', [existing.id]);
       const answers = await client.query('SELECT * FROM student_answers WHERE session_id=$1', [existing.id]);
+      // Also return exam data and questions for resumed session
+      const resumedExam = await client.query('SELECT * FROM exams WHERE id=$1', [exam_id]);
+      const resumedQs = await client.query(
+        'SELECT q.id,q.section,q.topic,q.question_text,q.option_a,q.option_b,q.option_c,q.option_d,q.image_url FROM exam_questions eq JOIN questions q ON eq.question_id=q.id WHERE eq.exam_id=$1 ORDER BY eq.sequence_order',
+        [exam_id]
+      );
+      const re = resumedExam.rows[0];
       await client.query('COMMIT');
-      return res.json({ session: sess.rows[0], answers: answers.rows, resumed: true });
+      return res.json({
+        session: sess.rows[0],
+        answers: answers.rows,
+        resumed: true,
+        questions: resumedQs.rows,
+        exam: {
+          id: re.id, title: re.title, duration_minutes: re.duration_minutes,
+          end_time: re.end_time, aptitude_time_minutes: re.aptitude_time_minutes || 0,
+          verbal_time_minutes: re.verbal_time_minutes || 0, device_allowed: re.device_allowed || 'both',
+          marks_per_question: re.marks_per_question, negative_marking: re.negative_marking,
+          negative_marks: re.negative_marks, total_questions: re.total_questions
+        }
+      });
     }
     const qRes = await client.query(
       'SELECT q.id,q.section,q.topic,q.question_text,q.option_a,q.option_b,q.option_c,q.option_d,q.image_url FROM exam_questions eq JOIN questions q ON eq.question_id=q.id WHERE eq.exam_id=$1 ORDER BY eq.sequence_order',
@@ -151,8 +170,21 @@ router.post('/heartbeat', async (req, res) => {
   try {
     const sess = await pool.query("SELECT id FROM student_sessions WHERE session_token=$1 AND status='active'", [session_token]);
     if (!sess.rows.length) return res.status(404).json({ alive: false });
-    await pool.query('INSERT INTO heartbeats (session_id) VALUES ($1)', [sess.rows[0].id]);
-    res.json({ alive: true });
+    const session_id = sess.rows[0].id;
+    await pool.query('INSERT INTO heartbeats (session_id) VALUES ($1)', [session_id]);
+    // Check for time extensions
+    const ext = await pool.query(
+      "SELECT details FROM violations WHERE session_id=$1 AND violation_type='time_extended' ORDER BY occurred_at DESC LIMIT 1",
+      [session_id]
+    );
+    let extraMinutes = 0;
+    if (ext.rows.length) {
+      const details = ext.rows[0].details;
+      extraMinutes = details?.extra_minutes || details?.minutes || 0;
+      // Delete after reading so it only fires once per student
+      await pool.query("DELETE FROM violations WHERE session_id=$1 AND violation_type='time_extended'", [session_id]);
+    }
+    res.json({ alive: true, extraMinutes });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
