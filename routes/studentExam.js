@@ -305,21 +305,32 @@ router.post('/start', async (req, res) => {
     }
 
     // ── PROXY DETECTION ─────────────────────────────────────────────────────
+    // Rules:
+    // - Different exam on same device = NO CHECK (different shifts, different students — allowed)
+    // - Same exam, same device, different student, within 3 min = BLOCK (proxy candidate)
+    // - Same exam, same device, different student, after 3 min = ALLOW but soft flag
     if (device_fingerprint) {
-      const PROXY_GAP_SECONDS = 300;
+      const PROXY_GAP_SECONDS = 180; // 3 minutes
+
+      // Only check within THIS exam — different exams on same device are always allowed
       const proxyCheck = await client.query(
         `SELECT ss.id, ss.name, ss.roll_number, ss.submitted_at, ss.started_at, ss.ip_address
          FROM student_sessions ss
-         WHERE ss.exam_id=$1 AND ss.device_fingerprint=$2 AND ss.roll_number!=$3
+         WHERE ss.exam_id=$1
+           AND ss.device_fingerprint=$2
+           AND ss.roll_number != $3
            AND ss.status IN ('submitted','auto_submitted','active')
          ORDER BY COALESCE(ss.submitted_at, ss.started_at) DESC LIMIT 1`,
         [exam_id, device_fingerprint, roll_number.trim().toUpperCase()]
       );
+
       if (proxyCheck.rows.length) {
         const prev       = proxyCheck.rows[0];
         const prevTime   = prev.submitted_at || prev.started_at;
         const gapSeconds = Math.floor((new Date() - new Date(prevTime)) / 1000);
+
         if (gapSeconds < PROXY_GAP_SECONDS) {
+          // Within 3 minutes — block as proxy candidate
           try {
             await client.query(
               `INSERT INTO proxy_alerts
@@ -330,9 +341,21 @@ router.post('/start', async (req, res) => {
             );
           } catch {}
           await client.query('ROLLBACK');
+          const minsLeft = Math.ceil((PROXY_GAP_SECONDS - gapSeconds) / 60);
           return res.status(403).json({
-            error: `Security check failed. This device was used by another student recently. Please contact your trainer.`
+            error: `This device was used by another student ${Math.floor(gapSeconds/60)}m ${gapSeconds%60}s ago for this exam. Please wait ${minsLeft} minute(s) or contact your trainer.`
           });
+        } else {
+          // After 3 minutes — allow but log as soft flag for trainer review
+          try {
+            await client.query(
+              `INSERT INTO proxy_alerts
+                 (exam_id,session_id_1,device_fingerprint,ip_address_1,ip_address_2,
+                  submitted_at_1,started_at_2,gap_seconds,alert_type)
+               VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,'same_device_soft')`,
+              [exam_id, prev.id, device_fingerprint, prev.ip_address, clientIP, prev.submitted_at, gapSeconds]
+            );
+          } catch {}
         }
       }
     }
