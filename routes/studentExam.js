@@ -113,7 +113,8 @@ router.post('/start', async (req, res) => {
       if (existing.status !== 'active') {
         return res.status(400).json({ error: 'You have already submitted this exam' });
       }
-      // Resume existing session
+      // Resume existing session — send back ALL section timing data so frontend
+      // can restore correct section + remaining time on refresh
       const sess    = await client.query('SELECT * FROM student_sessions WHERE id=$1', [existing.id]);
       const answers = await client.query('SELECT * FROM student_answers WHERE session_id=$1', [existing.id]);
       const resumedExam = await client.query('SELECT * FROM exams WHERE id=$1', [exam_id]);
@@ -125,9 +126,12 @@ router.post('/start', async (req, res) => {
         [exam_id]
       );
       const re = resumedExam.rows[0];
+      const s  = sess.rows[0];
       await client.query('COMMIT');
       return res.json({
-        session:  sess.rows[0],
+        // Full session row — contains current_section, aptitude_started_at,
+        // verbal_started_at, aptitude_submitted_at, verbal_submitted_at
+        session:  s,
         answers:  answers.rows,
         resumed:  true,
         questions:resumedQs.rows,
