@@ -172,15 +172,22 @@ router.post('/:id/clone', authenticate, async (req, res) => {
     const orig = await client.query('SELECT * FROM exams WHERE id=$1', [req.params.id]);
     if (!orig.rows.length) return res.status(404).json({ error: 'Exam not found' });
     const e = orig.rows[0];
+    // Generate fresh room_code and master_room_code for the clone
+    const newRoomCode   = genRoomCode()
+    const newMasterCode = genMasterCode()
+
     const cloned = await client.query(
       `INSERT INTO exams (trainer_id,title,description,exam_type,university,department,section_filter,
         duration_minutes,marks_per_question,negative_marking,negative_marks,total_questions,
-        aptitude_count,verbal_count,randomize_questions,randomize_options)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+        aptitude_count,verbal_count,randomize_questions,randomize_options,
+        room_code,master_room_code,aptitude_time_minutes,verbal_time_minutes,device_allowed)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
       [req.trainer.id, e.title+' (Copy)', e.description, e.exam_type, e.university,
        e.department, e.section_filter, e.duration_minutes, e.marks_per_question,
        e.negative_marking, e.negative_marks, e.total_questions,
-       e.aptitude_count, e.verbal_count, e.randomize_questions, e.randomize_options]
+       e.aptitude_count, e.verbal_count, e.randomize_questions, e.randomize_options,
+       newRoomCode, newMasterCode,
+       e.aptitude_time_minutes || 0, e.verbal_time_minutes || 0, e.device_allowed || 'both']
     );
     const origQs = await client.query('SELECT * FROM exam_questions WHERE exam_id=$1 ORDER BY sequence_order', [req.params.id]);
     for (const q of origQs.rows) {
