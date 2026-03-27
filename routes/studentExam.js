@@ -42,22 +42,58 @@ function interleaveByTopic(questions) {
   return result;
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function generateParticipantId() {
+  // 10-digit unique number e.g. 4724381065
+  return Math.floor(1000000000 + Math.random() * 9000000000).toString()
+}
+
 // ─── POST /api/exam/verify ────────────────────────────────────────────────────
 
 router.post('/verify', async (req, res) => {
   const { room_code } = req.body;
   if (!room_code) return res.status(400).json({ error: 'Room code required' });
   try {
-    const result = await pool.query(
+    const code = room_code.trim().toUpperCase();
+
+    // Check normal room code first
+    let result = await pool.query(
       `SELECT id,title,description,exam_type,university,department,section_filter,
               duration_minutes,start_time,end_time,total_questions,status,
               aptitude_time_minutes,verbal_time_minutes,device_allowed,
-              marks_per_question,negative_marking,negative_marks
+              marks_per_question,negative_marking,negative_marks,master_room_code
        FROM exams WHERE room_code=$1`,
-      [room_code.toUpperCase().trim()]
+      [code]
     );
+
+    let isMasterCode = false;
+
+    // If not found as normal code, check master code (5-digit numeric)
+    if (!result.rows.length) {
+      result = await pool.query(
+        `SELECT id,title,description,exam_type,university,department,section_filter,
+                duration_minutes,start_time,end_time,total_questions,status,
+                aptitude_time_minutes,verbal_time_minutes,device_allowed,
+                marks_per_question,negative_marking,negative_marks,master_room_code
+         FROM exams WHERE master_room_code=$1`,
+        [code]
+      );
+      if (result.rows.length) isMasterCode = true;
+    }
+
     if (!result.rows.length) return res.status(404).json({ error: 'Invalid room code' });
     const exam = result.rows[0];
+
+    if (isMasterCode) {
+      // Master code — only works for active/live/published exams
+      if (['draft','ended'].includes(exam.status)) {
+        return res.status(403).json({ error: 'No active exam found for this master code' });
+      }
+      return res.json({ exam, is_master_code: true });
+    }
+
+    // Normal code checks
     if (exam.status==='draft')  return res.status(403).json({ error: 'Exam not published yet' });
     if (exam.status==='ended')  return res.status(403).json({ error: 'Exam has ended' });
     const now = new Date();
@@ -70,7 +106,7 @@ router.post('/verify', async (req, res) => {
     if (exam.end_time && new Date(exam.end_time)<now) {
       return res.status(403).json({ error: 'Exam window has passed' });
     }
-    res.json({ exam });
+    res.json({ exam, is_master_code: false });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -82,17 +118,132 @@ router.post('/verify', async (req, res) => {
 router.post('/start', async (req, res) => {
   const {
     exam_id, room_code, name, roll_number, mobile, email,
-    university, department, section, geolocation, device_fingerprint
+    university, department, section, geolocation, device_fingerprint,
+    is_master_code, participant_id_input
   } = req.body;
 
   if (!exam_id||!name||!roll_number||!mobile||!email||!university||!department||!section)
     return res.status(400).json({ error: 'All student details required' });
 
+  const clientIP = req.ip || req.connection?.remoteAddress || '';
+  const RESUME_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+
+  // ══ MASTER CODE RESUME PATH ════════════════════════════════════════════════
+  if (is_master_code) {
+    if (!participant_id_input) {
+      return res.status(400).json({ error: 'Participant ID is required to resume' });
+    }
+    const client2 = await pool.connect();
+    try {
+      const sessRes = await client2.query(
+        `SELECT ss.*, e.aptitude_time_minutes, e.verbal_time_minutes, e.title as exam_title,
+                e.duration_minutes as exam_duration, e.marks_per_question, e.negative_marking,
+                e.negative_marks, e.total_questions as exam_total_q
+         FROM student_sessions ss
+         JOIN exams e ON ss.exam_id = e.id
+         WHERE ss.exam_id=$1 AND UPPER(ss.roll_number)=$2`,
+        [exam_id, roll_number.trim().toUpperCase()]
+      );
+
+      if (!sessRes.rows.length) {
+        return res.status(404).json({
+          error: 'No exam session found for this roll number. Use the normal room code to start your exam.'
+        });
+      }
+
+      const sess = sessRes.rows[0];
+
+      if (sess.participant_id !== participant_id_input.trim()) {
+        return res.status(403).json({
+          error: 'Participant ID does not match. Please check the ID you wrote on your paper.'
+        });
+      }
+
+      if (['submitted','auto_submitted'].includes(sess.status)) {
+        return res.status(400).json({
+          error: 'Your exam has already been submitted. Please contact your trainer.'
+        });
+      }
+
+      // Heartbeat gap for flagging
+      const hbRes   = await client2.query(
+        'SELECT pinged_at FROM heartbeats WHERE session_id=$1 ORDER BY pinged_at DESC LIMIT 1',
+        [sess.id]
+      );
+      const lastHb  = hbRes.rows[0]?.pinged_at;
+      const gapSecs = lastHb ? Math.floor((Date.now() - new Date(lastHb).getTime()) / 1000) : null;
+      const isSuspicious = gapSecs !== null && gapSecs < 120;
+      const flagReason   = isSuspicious
+        ? `Resume gap only ${gapSecs}s — possible intentional disconnect` : null;
+
+      // Log resume
+      await client2.query(
+        `INSERT INTO resume_logs
+           (session_id,exam_id,roll_number,participant_id,heartbeat_gap_seconds,is_flagged,flag_reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [sess.id, exam_id, roll_number.trim().toUpperCase(),
+         participant_id_input.trim(), gapSecs, isSuspicious, flagReason]
+      );
+
+      // Update resume count, flag if suspicious, violations reset to 1
+      await client2.query(
+        `UPDATE student_sessions
+         SET resume_count    = resume_count + 1,
+             last_resumed_at = NOW(),
+             is_flagged      = CASE WHEN $1 THEN true ELSE is_flagged END
+         WHERE id = $2`,
+        [isSuspicious, sess.id]
+      );
+
+      if (sess.status !== 'active') {
+        await client2.query("UPDATE student_sessions SET status='active' WHERE id=$1", [sess.id]);
+      }
+
+      const answers = await client2.query(
+        'SELECT * FROM student_answers WHERE session_id=$1', [sess.id]
+      );
+      const qRes = await client2.query(
+        `SELECT q.id,q.section,q.topic,q.question_text,
+                q.option_a,q.option_b,q.option_c,q.option_d,q.image_url
+         FROM exam_questions eq JOIN questions q ON eq.question_id=q.id
+         WHERE eq.exam_id=$1 ORDER BY eq.sequence_order`,
+        [exam_id]
+      );
+
+      return res.json({
+        session:        sess,
+        answers:        answers.rows,
+        resumed:        true,
+        resume_flagged: isSuspicious,
+        questions:      qRes.rows,
+        violation_reset_to: 1,
+        exam: {
+          id:                    exam_id,
+          title:                 sess.exam_title,
+          duration_minutes:      sess.exam_duration,
+          end_time:              null,
+          aptitude_time_minutes: sess.aptitude_time_minutes || 0,
+          verbal_time_minutes:   sess.verbal_time_minutes   || 0,
+          device_allowed:        'both',
+          marks_per_question:    sess.marks_per_question,
+          negative_marking:      sess.negative_marking,
+          negative_marks:        sess.negative_marks,
+          total_questions:       sess.exam_total_q
+        }
+      });
+    } catch (err) {
+      console.error('RESUME ERR:', err);
+      return res.status(500).json({ error: 'Server error during resume' });
+    } finally {
+      client2.release();
+    }
+  }
+
+  // ══ NORMAL START PATH ══════════════════════════════════════════════════════
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // ── 1. Verify exam ──────────────────────────────────────────────────────
     const examRes = await client.query(
       'SELECT * FROM exams WHERE id=$1 AND room_code=$2',
       [exam_id, room_code?.toUpperCase()]
@@ -101,103 +252,92 @@ router.post('/start', async (req, res) => {
     const exam = examRes.rows[0];
     if (['draft','ended'].includes(exam.status)) return res.status(403).json({ error: 'Exam not available' });
 
-    const clientIP = req.ip || req.connection?.remoteAddress || '';
-
-    // ── 2. Check existing session (resume or block) ─────────────────────────
+    // Check existing session
     const dup = await client.query(
-      'SELECT id,status FROM student_sessions WHERE exam_id=$1 AND roll_number=$2',
+      'SELECT id, status, started_at FROM student_sessions WHERE exam_id=$1 AND roll_number=$2',
       [exam_id, roll_number.trim().toUpperCase()]
     );
+
     if (dup.rows.length) {
-      const existing = dup.rows[0];
-      if (existing.status !== 'active') {
-        return res.status(400).json({ error: 'You have already submitted this exam' });
+      const existing  = dup.rows[0];
+      const elapsed   = Date.now() - new Date(existing.started_at).getTime();
+
+      // Already submitted — always block
+      if (['submitted','auto_submitted'].includes(existing.status)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'You have already submitted this exam.' });
       }
-      // Resume existing session — send back ALL section timing data so frontend
-      // can restore correct section + remaining time on refresh
-      const sess    = await client.query('SELECT * FROM student_sessions WHERE id=$1', [existing.id]);
-      const answers = await client.query('SELECT * FROM student_answers WHERE session_id=$1', [existing.id]);
-      const resumedExam = await client.query('SELECT * FROM exams WHERE id=$1', [exam_id]);
-      const resumedQs   = await client.query(
-        `SELECT q.id,q.section,q.topic,q.question_text,
-                q.option_a,q.option_b,q.option_c,q.option_d,q.image_url
-         FROM exam_questions eq JOIN questions q ON eq.question_id=q.id
-         WHERE eq.exam_id=$1 ORDER BY eq.sequence_order`,
-        [exam_id]
-      );
-      const re = resumedExam.rows[0];
-      const s  = sess.rows[0];
-      await client.query('COMMIT');
-      return res.json({
-        // Full session row — contains current_section, aptitude_started_at,
-        // verbal_started_at, aptitude_submitted_at, verbal_submitted_at
-        session:  s,
-        answers:  answers.rows,
-        resumed:  true,
-        questions:resumedQs.rows,
-        exam: {
-          id: re.id, title: re.title, duration_minutes: re.duration_minutes,
-          end_time: re.end_time, aptitude_time_minutes: re.aptitude_time_minutes || 0,
-          verbal_time_minutes: re.verbal_time_minutes || 0, device_allowed: re.device_allowed || 'both',
-          marks_per_question: re.marks_per_question, negative_marking: re.negative_marking,
-          negative_marks: re.negative_marks, total_questions: re.total_questions
-        }
+
+      // Within 15 minutes — silent resume (refresh / accidental close)
+      if (elapsed < RESUME_WINDOW_MS) {
+        const sess    = await client.query('SELECT * FROM student_sessions WHERE id=$1', [existing.id]);
+        const answers = await client.query('SELECT * FROM student_answers WHERE session_id=$1', [existing.id]);
+        const re      = (await client.query('SELECT * FROM exams WHERE id=$1', [exam_id])).rows[0];
+        const qRes    = await client.query(
+          `SELECT q.id,q.section,q.topic,q.question_text,
+                  q.option_a,q.option_b,q.option_c,q.option_d,q.image_url
+           FROM exam_questions eq JOIN questions q ON eq.question_id=q.id
+           WHERE eq.exam_id=$1 ORDER BY eq.sequence_order`,
+          [exam_id]
+        );
+        await client.query('COMMIT');
+        return res.json({
+          session:   sess.rows[0],
+          answers:   answers.rows,
+          resumed:   true,
+          questions: qRes.rows,
+          exam: {
+            id: re.id, title: re.title, duration_minutes: re.duration_minutes,
+            end_time: re.end_time, aptitude_time_minutes: re.aptitude_time_minutes || 0,
+            verbal_time_minutes: re.verbal_time_minutes || 0, device_allowed: re.device_allowed || 'both',
+            marks_per_question: re.marks_per_question, negative_marking: re.negative_marking,
+            negative_marks: re.negative_marks, total_questions: re.total_questions
+          }
+        });
+      }
+
+      // After 15 minutes — must use master code
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error: 'Your session is already active. To resume, use the Master Code given by CDC team member.',
+        needs_master_code: true
       });
     }
 
-    // ── 3. PROXY DETECTION — same device, different student, within 5 minutes ─
+    // ── PROXY DETECTION ─────────────────────────────────────────────────────
     if (device_fingerprint) {
-      const PROXY_GAP_SECONDS = 300; // 5 minutes
+      const PROXY_GAP_SECONDS = 300;
       const proxyCheck = await client.query(
         `SELECT ss.id, ss.name, ss.roll_number, ss.submitted_at, ss.started_at, ss.ip_address
          FROM student_sessions ss
-         WHERE ss.exam_id = $1
-           AND ss.device_fingerprint = $2
-           AND ss.roll_number != $3
+         WHERE ss.exam_id=$1 AND ss.device_fingerprint=$2 AND ss.roll_number!=$3
            AND ss.status IN ('submitted','auto_submitted','active')
-         ORDER BY COALESCE(ss.submitted_at, ss.started_at) DESC
-         LIMIT 1`,
+         ORDER BY COALESCE(ss.submitted_at, ss.started_at) DESC LIMIT 1`,
         [exam_id, device_fingerprint, roll_number.trim().toUpperCase()]
       );
-
       if (proxyCheck.rows.length) {
-        const prev = proxyCheck.rows[0];
-        const prevTime = prev.submitted_at || prev.started_at;
+        const prev       = proxyCheck.rows[0];
+        const prevTime   = prev.submitted_at || prev.started_at;
         const gapSeconds = Math.floor((new Date() - new Date(prevTime)) / 1000);
-
         if (gapSeconds < PROXY_GAP_SECONDS) {
-          // Log proxy alert
-          await client.query(
-            `INSERT INTO proxy_alerts
-               (exam_id, session_id_1, session_id_2, device_fingerprint,
-                ip_address_1, ip_address_2, submitted_at_1, started_at_2, gap_seconds, alert_type)
-             VALUES ($1,$2,NULL,$3,$4,$5,$6,NOW(),$7,'same_device_gap')`,
-            [
-              exam_id, prev.id, device_fingerprint,
-              prev.ip_address, clientIP,
-              prev.submitted_at, gapSeconds
-            ]
-          );
+          try {
+            await client.query(
+              `INSERT INTO proxy_alerts
+                 (exam_id,session_id_1,device_fingerprint,ip_address_1,ip_address_2,
+                  submitted_at_1,started_at_2,gap_seconds,alert_type)
+               VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,'same_device_gap')`,
+              [exam_id, prev.id, device_fingerprint, prev.ip_address, clientIP, prev.submitted_at, gapSeconds]
+            );
+          } catch {}
           await client.query('ROLLBACK');
           return res.status(403).json({
-            error: `Security check failed. This device was used by another student ${Math.floor(gapSeconds/60)}m ${gapSeconds%60}s ago. Please contact your trainer.`
+            error: `Security check failed. This device was used by another student recently. Please contact your trainer.`
           });
         }
-
-        // Gap > 5 min but same device — log as soft alert (allowed but flagged)
-        try {
-          await client.query(
-            `INSERT INTO proxy_alerts
-               (exam_id, session_id_1, device_fingerprint,
-                ip_address_1, ip_address_2, submitted_at_1, started_at_2, gap_seconds, alert_type)
-             VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,'same_device_soft')`,
-            [exam_id, prev.id, device_fingerprint, prev.ip_address, clientIP, prev.submitted_at, gapSeconds]
-          );
-        } catch {}
       }
     }
 
-    // ── 4. Load and prepare questions ───────────────────────────────────────
+    // ── LOAD QUESTIONS ───────────────────────────────────────────────────────
     const qRes = await client.query(
       `SELECT q.id,q.section,q.topic,q.question_text,
               q.option_a,q.option_b,q.option_c,q.option_d,q.image_url
@@ -211,7 +351,7 @@ router.post('/start', async (req, res) => {
     const question_order = questions.map(q => q.id);
     const option_orders  = {};
     const shuffledQuestions = questions.map(q => {
-      const opts        = ['A','B','C','D'];
+      const opts         = ['A','B','C','D'];
       const shuffledOpts = exam.randomize_options ? shuffle(opts) : opts;
       option_orders[q.id] = shuffledOpts;
       return {
@@ -226,13 +366,24 @@ router.post('/start', async (req, res) => {
       };
     });
 
-    // ── 5. Create session ───────────────────────────────────────────────────
+    // ── GENERATE UNIQUE PARTICIPANT ID ───────────────────────────────────────
+    let participantId = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const tryId  = generateParticipantId();
+      const exists = await client.query(
+        'SELECT id FROM student_sessions WHERE participant_id=$1', [tryId]
+      );
+      if (!exists.rows.length) { participantId = tryId; break; }
+    }
+    if (!participantId) participantId = generateParticipantId();
+
+    // ── CREATE SESSION ───────────────────────────────────────────────────────
     const sessRes = await client.query(
       `INSERT INTO student_sessions
          (exam_id,name,roll_number,mobile,email,university,department,section,
           ip_address,geolocation,user_agent,question_order,option_orders,
-          device_fingerprint,last_active_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+          device_fingerprint,last_active_at,participant_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15)
        RETURNING *`,
       [
         exam_id, name.trim(), roll_number.trim().toUpperCase(),
@@ -243,7 +394,8 @@ router.post('/start', async (req, res) => {
         req.headers['user-agent'],
         JSON.stringify(question_order),
         JSON.stringify(option_orders),
-        device_fingerprint || null
+        device_fingerprint || null,
+        participantId
       ]
     );
 
@@ -256,14 +408,16 @@ router.post('/start', async (req, res) => {
     const verbalQs   = shuffledQuestions.filter(q => q.section === 'verbal');
 
     res.json({
-      session:          sessRes.rows[0],
-      questions:        shuffledQuestions,
+      session:            sessRes.rows[0],
+      questions:          shuffledQuestions,
       aptitude_questions: aptitudeQs,
       verbal_questions:   verbalQs,
       has_both_sections:  aptitudeQs.length > 0 && verbalQs.length > 0,
       exam: {
-        id: exam.id, title: exam.title,
-        duration_minutes: exam.duration_minutes, end_time: exam.end_time,
+        id:                    exam.id,
+        title:                 exam.title,
+        duration_minutes:      exam.duration_minutes,
+        end_time:              exam.end_time,
         aptitude_time_minutes: exam.aptitude_time_minutes || 0,
         verbal_time_minutes:   exam.verbal_time_minutes   || 0,
         device_allowed:        exam.device_allowed || 'both',

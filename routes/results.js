@@ -129,7 +129,7 @@ router.get('/:examId/export', authenticate, async (req, res) => {
     const exam = examRes.rows[0]
     const result = await pool.query(
       `SELECT
-         ss.name as "Student Name", ss.roll_number as "Roll Number",
+         ss.name as "Student Name", ss.roll_number as "Roll Number", ss.participant_id as "Participant ID",
          ss.email as "Email", ss.mobile as "Mobile",
          ss.university as "University", ss.department as "Department", ss.section as "Section",
          TO_CHAR(ss.started_at, 'DD-Mon-YYYY HH24:MI') as "Start Time",
