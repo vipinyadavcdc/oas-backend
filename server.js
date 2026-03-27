@@ -49,6 +49,7 @@ app.use('/api/results',   require('./routes/results'));
 app.use('/api/monitor',   require('./routes/monitor'));
 app.use('/api/audit',     require('./routes/audit'));
 app.use('/api/templates', require('./routes/templates'));
+app.use('/api/analysis',  require('./routes/analysis'));
 
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 
