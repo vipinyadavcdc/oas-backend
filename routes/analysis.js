@@ -380,7 +380,7 @@ router.post('/ai-report', authenticate, analysisOnly, (req, res) => {
 
   const https   = require('https')
   const body    = JSON.stringify({
-    model:      'claude-sonnet-4-20250514',
+    model:      'claude-sonnet-4-6',
     max_tokens: 2500,
     stream:     true,
     messages:   [{ role: 'user', content: prompt }]
@@ -398,13 +398,41 @@ router.post('/ai-report', authenticate, analysisOnly, (req, res) => {
     }
   }
 
+  console.log('[AI] Calling Anthropic API, key starts with:', apiKey.slice(0,20))
+
   const apiReq = https.request(options, (apiRes) => {
+    console.log('[AI] Anthropic status:', apiRes.statusCode, apiRes.statusMessage)
     let buffer = ''
 
+    // Handle non-200 responses
+    if (apiRes.statusCode !== 200) {
+      let errBody = ''
+      apiRes.on('data', chunk => { errBody += chunk.toString() })
+      apiRes.on('end', () => {
+        console.error('[AI] Anthropic error:', errBody)
+        try { res.write('data: ' + JSON.stringify({ error: 'Anthropic error ' + apiRes.statusCode + ': ' + errBody.slice(0,300) }) + '\n\n'); res.end() } catch(e) {}
+      })
+      return
+    }
+
+    console.log('[AI] Anthropic response status:', apiRes.statusCode)
+
+    // If not 200, read error body
+    if (apiRes.statusCode !== 200) {
+      let errBody = ''
+      apiRes.on('data', chunk => { errBody += chunk.toString() })
+      apiRes.on('end', () => {
+        console.error('[AI] Anthropic error body:', errBody)
+        try { res.write('data: ' + JSON.stringify({ error: 'Anthropic API error ' + apiRes.statusCode + ': ' + errBody.slice(0,200) }) + '\n\n'); res.end() } catch(e) {}
+      })
+      return
+    }
+
     apiRes.on('data', (chunk) => {
-      buffer += chunk.toString()
+      const raw = chunk.toString()
+      console.log('[AI] chunk received, length:', raw.length, 'preview:', raw.slice(0,100))
+      buffer += raw
       const lines = buffer.split('\n')
-      // Keep last incomplete line in buffer
       buffer = lines.pop()
 
       for (const line of lines) {
@@ -417,15 +445,18 @@ router.post('/ai-report', authenticate, analysisOnly, (req, res) => {
             res.write('data: ' + JSON.stringify({ text: json.delta.text }) + '\n\n')
           }
           if (json.type === 'message_stop') {
+            console.log('[AI] message_stop received, ending stream')
             res.write('data: [DONE]\n\n')
             res.end()
           }
-        } catch (e) {}
+        } catch (e) {
+          console.log('[AI] parse error:', e.message, 'data:', data.slice(0,100))
+        }
       }
     })
 
     apiRes.on('end', () => {
-      // Process any remaining buffer
+      console.log('[AI] stream ended, buffer remaining:', buffer.slice(0,100))
       if (buffer && buffer.startsWith('data: ')) {
         try {
           const json = JSON.parse(buffer.slice(6).trim())
@@ -438,7 +469,7 @@ router.post('/ai-report', authenticate, analysisOnly, (req, res) => {
     })
 
     apiRes.on('error', (err) => {
-      console.error('Anthropic stream error:', err)
+      console.error('[AI] Anthropic stream error:', err)
       try { res.write('data: ' + JSON.stringify({ error: err.message }) + '\n\n'); res.end() } catch (e) {}
     })
   })
