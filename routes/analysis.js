@@ -363,7 +363,7 @@ router.get('/:examId/full-data', authenticate, analysisOnly, async (req, res) =>
 })
 
 // ── POST /api/analysis/ai-report — streaming AI report ──────────────────────
-router.post('/ai-report', authenticate, analysisOnly, async (req, res) => {
+router.post('/ai-report', authenticate, analysisOnly, (req, res) => {
   const { prompt } = req.body
   if (!prompt) return res.status(400).json({ error: 'No prompt provided' })
 
@@ -372,67 +372,84 @@ router.post('/ai-report', authenticate, analysisOnly, async (req, res) => {
     return res.status(500).json({ error: 'AI not configured. Add ANTHROPIC_API_KEY to Railway environment variables.' })
   }
 
-  try {
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('Connection', 'keep-alive')
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.flushHeaders()
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.flushHeaders()
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type':      'application/json',
-        'x-api-key':         apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model:      'claude-sonnet-4-20250514',
-        max_tokens: 2500,
-        stream:     true,
-        messages:   [{ role: 'user', content: prompt }]
-      })
-    })
+  const https   = require('https')
+  const body    = JSON.stringify({
+    model:      'claude-sonnet-4-20250514',
+    max_tokens: 2500,
+    stream:     true,
+    messages:   [{ role: 'user', content: prompt }]
+  })
 
-    if (!response.ok) {
-      const errText = await response.text()
-      res.write('data: ' + JSON.stringify({ error: errText }) + '\n\n')
-      res.end()
-      return
+  const options = {
+    hostname: 'api.anthropic.com',
+    path:     '/v1/messages',
+    method:   'POST',
+    headers: {
+      'Content-Type':      'application/json',
+      'Content-Length':    Buffer.byteLength(body),
+      'x-api-key':         apiKey,
+      'anthropic-version': '2023-06-01',
     }
+  }
 
-    const reader  = response.body.getReader()
-    const decoder = new TextDecoder()
+  const apiReq = https.request(options, (apiRes) => {
+    let buffer = ''
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      const chunk = decoder.decode(value)
-      const lines = chunk.split('\n').filter(function(l) { return l.startsWith('data: ') })
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]
+    apiRes.on('data', (chunk) => {
+      buffer += chunk.toString()
+      const lines = buffer.split('\n')
+      // Keep last incomplete line in buffer
+      buffer = lines.pop()
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6).trim()
+        if (data === '[DONE]') continue
         try {
-          const json = JSON.parse(line.slice(6))
+          const json = JSON.parse(data)
           if (json.type === 'content_block_delta' && json.delta && json.delta.text) {
             res.write('data: ' + JSON.stringify({ text: json.delta.text }) + '\n\n')
           }
           if (json.type === 'message_stop') {
             res.write('data: [DONE]\n\n')
             res.end()
-            return
           }
         } catch (e) {}
       }
-    }
-    res.write('data: [DONE]\n\n')
-    res.end()
-  } catch (err) {
-    console.error('AI report error:', err)
-    try {
-      res.write('data: ' + JSON.stringify({ error: err.message }) + '\n\n')
-      res.end()
-    } catch (e) {}
-  }
+    })
+
+    apiRes.on('end', () => {
+      // Process any remaining buffer
+      if (buffer && buffer.startsWith('data: ')) {
+        try {
+          const json = JSON.parse(buffer.slice(6).trim())
+          if (json.delta && json.delta.text) {
+            res.write('data: ' + JSON.stringify({ text: json.delta.text }) + '\n\n')
+          }
+        } catch (e) {}
+      }
+      try { res.write('data: [DONE]\n\n'); res.end() } catch (e) {}
+    })
+
+    apiRes.on('error', (err) => {
+      console.error('Anthropic stream error:', err)
+      try { res.write('data: ' + JSON.stringify({ error: err.message }) + '\n\n'); res.end() } catch (e) {}
+    })
+  })
+
+  apiReq.on('error', (err) => {
+    console.error('AI request error:', err)
+    try { res.write('data: ' + JSON.stringify({ error: err.message }) + '\n\n'); res.end() } catch (e) {}
+  })
+
+  apiReq.write(body)
+  apiReq.end()
 })
 
 module.exports = router
