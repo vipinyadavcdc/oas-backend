@@ -362,4 +362,86 @@ router.get('/:examId/full-data', authenticate, analysisOnly, async (req, res) =>
   }
 })
 
+// ── POST /api/analysis/ai-report — streaming AI report ──────────────────────
+// Proxies to Claude API using server-side API key
+router.post('/ai-report', authenticate, analysisOnly, async (req, res) => {
+  const { prompt } = req.body
+  if (!prompt) return res.status(400).json({ error: 'No prompt provided' })
+
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return res.status(500).json({ error: 'AI not configured. Add ANTHROPIC_API_KEY to Railway environment variables.' })
+
+  try {
+    // Set up SSE streaming
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.flushHeaders()
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type':      'application/json',
+        'x-api-key':         apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model:      'claude-sonnet-4-20250514',
+        max_tokens: 2500,
+        stream:     true,
+        messages:   [{ role: 'user', content: prompt }]
+      })
+    })
+
+    if (!response.ok) {
+      const err = await response.text()
+      res.write(`data: ${JSON.stringify({ error: err })}
+
+`)
+      res.end()
+      return
+    }
+
+    const reader  = response.body.getReader()
+    const decoder = new TextDecoder()
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value)
+      const lines = chunk.split('
+').filter(l => l.startsWith('data: '))
+      for (const line of lines) {
+        try {
+          const json = JSON.parse(line.slice(6))
+          if (json.type === 'content_block_delta' && json.delta?.text) {
+            // Forward text chunk to frontend
+            res.write(`data: ${JSON.stringify({ text: json.delta.text })}
+
+`)
+          }
+          if (json.type === 'message_stop') {
+            res.write('data: [DONE]
+
+')
+            res.end()
+            return
+          }
+        } catch {}
+      }
+    }
+    res.write('data: [DONE]
+
+')
+    res.end()
+  } catch (err) {
+    console.error('AI report error:', err)
+    res.write(`data: ${JSON.stringify({ error: err.message })}
+
+`)
+    res.end()
+  }
+})
+
 module.exports = router
