@@ -8,8 +8,8 @@ const { authenticate } = require('../middleware/auth')
 
 // Middleware — only Vipin (EMP001) and Ankur (EMP002)
 const analysisOnly = (req, res, next) => {
-  const allowed = ['EMP001', 'EMP002']
-  if (!allowed.includes(req.trainer?.emp_id)) {
+  const allowed = ['vipinyadav.cdc@mriu.edu.in', 'ankurkumaraggarwal@mru.edu.in']
+  if (!allowed.includes(req.trainer?.email?.toLowerCase())) {
     return res.status(403).json({ error: 'Access denied' })
   }
   next()
