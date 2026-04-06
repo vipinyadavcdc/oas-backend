@@ -43,6 +43,7 @@ app.use('/api/audit',        require('./routes/audit'));
 app.use('/api/templates',    require('./routes/templates'));
 app.use('/api/analysis',     require('./routes/analysis'));
 app.use('/api/psychometric', require('./routes/psychometric'));
+app.use('/api/departments',  require('./routes/departments'));
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 app.use((err, req, res, next) => {
   console.error(err.stack);
