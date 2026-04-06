@@ -125,6 +125,31 @@ router.post('/start', async (req, res) => {
   if (!exam_id||!name||!roll_number||!mobile||!email||!university||!department||!section)
     return res.status(400).json({ error: 'All student details required' });
 
+  // ── Input validations ────────────────────────────────────────────────────
+  if (!is_master_code) {
+    if (/\s/.test(roll_number))          return res.status(400).json({ error: 'Roll number must not contain spaces' });
+    if (!/^\d{10}$/.test(mobile.trim())) return res.status(400).json({ error: 'Mobile number must be exactly 10 digits' });
+    if (/\s/.test(email))                return res.status(400).json({ error: 'Email must not contain spaces' });
+
+    // Validate department and section exist in master data
+    const deptCheck = await pool.query(
+      `SELECT d.id FROM departments d WHERE d.name=$1 AND d.university=$2 AND d.is_active=true`,
+      [department.trim(), university]
+    );
+    if (!deptCheck.rows.length)
+      return res.status(400).json({ error: 'Invalid department. Please select from the list.' });
+
+    const sectCheck = await pool.query(
+      `SELECT s.id FROM sections s
+       JOIN departments d ON s.department_id=d.id
+       WHERE s.name=$1 AND d.name=$2 AND d.university=$3 AND s.is_active=true`,
+      [section.trim(), department.trim(), university]
+    );
+    if (!sectCheck.rows.length)
+      return res.status(400).json({ error: 'Invalid section. Please select from the list.' });
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const clientIP = req.ip || req.connection?.remoteAddress || '';
   const RESUME_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 
