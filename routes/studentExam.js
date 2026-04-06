@@ -132,21 +132,25 @@ router.post('/start', async (req, res) => {
     if (/\s/.test(email))                return res.status(400).json({ error: 'Email must not contain spaces' });
 
     // Validate department and section exist in master data
-    const deptCheck = await pool.query(
-      `SELECT d.id FROM departments d WHERE d.name=$1 AND d.university=$2 AND d.is_active=true`,
-      [department.trim(), university]
-    );
-    if (!deptCheck.rows.length)
-      return res.status(400).json({ error: 'Invalid department. Please select from the list.' });
+    // Validate department exists and is active
+    if (req.body.department_id) {
+      const deptCheck = await pool.query(
+        `SELECT id FROM departments WHERE id=$1 AND is_active=true`,
+        [req.body.department_id]
+      );
+      if (!deptCheck.rows.length)
+        return res.status(400).json({ error: 'Invalid department. Please select from the list.' });
+    }
 
-    const sectCheck = await pool.query(
-      `SELECT s.id FROM sections s
-       JOIN departments d ON s.department_id=d.id
-       WHERE s.name=$1 AND d.name=$2 AND d.university=$3 AND s.is_active=true`,
-      [section.trim(), department.trim(), university]
-    );
-    if (!sectCheck.rows.length)
-      return res.status(400).json({ error: 'Invalid section. Please select from the list.' });
+    // Validate section exists and is active
+    if (req.body.section_id) {
+      const sectCheck = await pool.query(
+        `SELECT id FROM sections WHERE id=$1 AND is_active=true`,
+        [req.body.section_id]
+      );
+      if (!sectCheck.rows.length)
+        return res.status(400).json({ error: 'Invalid section. Please select from the list.' });
+    }
   }
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -426,12 +430,16 @@ router.post('/start', async (req, res) => {
     if (!participantId) participantId = generateParticipantId();
 
     // ── CREATE SESSION ───────────────────────────────────────────────────────
+    // Extract new hierarchy IDs from body (optional — backwards compatible)
+    const { department_id, semester_id, section_id, academic_session_id } = req.body;
+
     const sessRes = await client.query(
       `INSERT INTO student_sessions
          (exam_id,name,roll_number,mobile,email,university,department,section,
           ip_address,geolocation,user_agent,question_order,option_orders,
-          device_fingerprint,last_active_at,participant_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15)
+          device_fingerprint,last_active_at,participant_id,
+          academic_session_id,semester_id,section_id,semester_number)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15,$16,$17,$18,$19)
        RETURNING *`,
       [
         exam_id, name.trim(), roll_number.trim().toUpperCase(),
@@ -443,7 +451,11 @@ router.post('/start', async (req, res) => {
         JSON.stringify(question_order),
         JSON.stringify(option_orders),
         device_fingerprint || null,
-        participantId
+        participantId,
+        academic_session_id || null,
+        semester_id || null,
+        section_id || null,
+        req.body.semester ? parseInt(req.body.semester.replace(/[^0-9]/g,'')) || null : null
       ]
     );
 
