@@ -44,6 +44,7 @@ app.use('/api/templates',    require('./routes/templates'));
 app.use('/api/analysis',     require('./routes/analysis'));
 app.use('/api/psychometric', require('./routes/psychometric'));
 app.use('/api/departments',  require('./routes/departments'));
+app.use('/api/sessions',     require('./routes/sessions'));
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 app.use((err, req, res, next) => {
   console.error(err.stack);
